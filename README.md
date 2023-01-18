@@ -1,4 +1,4 @@
-# :writing_hand: A Parseing Module for Jai
+# :writing_hand: A Parsing Module for Jai
 
 A wee parsing module for the Jai programming language. You can check the code in [parse.jai](parse.jai) and [tokenizer.jai](tokenizer.jai) then a few examples of how to use them in [example.jai](example.jai)
 
