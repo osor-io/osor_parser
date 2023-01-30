@@ -163,19 +163,30 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
             found_token(Identifier);
             if result_token.text == "true" || result_token.text == "false" then result_token.type = Bool;
         }
-        //
-        // @@TODO: Parse hex, binary, scientific notation, all that jazz
-        //
+        else if get(tokenizer) == #char "0" && peek(tokenizer) == #char "b"
+        {
+            advance();
+            advance();
+            while is_binary_or_underscore(get(tokenizer)) advance();
+            found_token(Integer);
+        }
+        else if get(tokenizer) == #char "0" && peek(tokenizer) == #char "x"
+        {
+            advance();
+            advance();
+            while is_hexadecimal_or_underscore(get(tokenizer)) advance();
+            found_token(Integer);
+        }
         else if is_digit(get(tokenizer)) || (get(tokenizer) == #char "." && is_digit(peek(tokenizer)))
         {
             has_floating_point := false; 
-            while is_digit(get(tokenizer))  advance();
+            while is_digit_or_underscore(get(tokenizer)) advance();
             if get(tokenizer) == #char "."
             {
                 advance();
                 has_floating_point = true; 
             }
-            while is_digit(get(tokenizer))  advance();
+            while is_digit_or_underscore(get(tokenizer)) advance();
             if has_floating_point then found_token(Float); else found_token(Integer);
         }
         else if get(tokenizer) == #char "\""
@@ -301,5 +312,80 @@ get_text_between_tokens_excluding_last :: (first : Token, one_past_last : Token)
     value.count = one_past_last.text.data - value.data;
     return value;
 }
+
+
+
+token_to_integer :: (token : Token) -> value : u64, success : bool, error : string
+{
+    if token.type != .Integer then return 0, false, "The token to parse wasn't an integer";
+
+    the_string := token.text;
+
+    base : u64 = 10;
+    if begins_with(the_string, "0b")
+    {
+        the_string = advance(the_string, 2);
+        base = 2;
+    }
+    else if begins_with(the_string, "0x")
+    {
+        the_string = advance(the_string, 2);
+        base = 16;
+    }
+
+    sum : u64 = 0;
+    if base ==
+    {
+        case 2;
+        for c : cast([]u8)the_string
+        {
+            if c == #char "_" then continue;
+            value : u8 = ---;
+            if      c == #char "0" then value = 0;
+            else if c == #char "1" then value = 1;
+            else return 0, false, "Non base 2 value in base 2 number";
+            sum *= base;
+            sum += value;
+        }
+
+        case 10;
+        for c : cast([]u8)the_string
+        {
+            if c == #char "_" then continue;
+            value : u8 = ---;
+            if is_digit(c) then value = c - #char "0";
+            else return 0, false, "Non base 10 value in base 10 number";
+            sum *= base;
+            sum += value;
+        }
+
+        case 16;
+        for c : cast([]u8)the_string
+        {
+            if c == #char "_" then continue;
+            value: u8 = ---;
+            if is_digit(c)                               then value = c - #char "0";
+            else if (c >= #char "a") && (c <= #char "f") then value = c - #char "a" + 10;
+            else if (c >= #char "A") && (c <= #char "F") then value = c - #char "A" + 10;
+            else return 0, false, "Non base 16 value in base 16 number"; 
+            sum *= base;
+            sum += value;
+        }
+    }
+
+    return sum, true, "";
+}
+
+
+
+#scope_file
+
+
+
+is_binary      :: (c : u8) -> bool { return c == #char "0" || c == #char "1"; }
+is_hexadecimal :: (c : u8) -> bool { return is_digit(c) || (c >= #char "a" && c <= #char "f") || (c >= #char "A" && c <= #char "F"); }
+is_digit_or_underscore       :: (c : u8) -> bool { return is_digit(c)       || c == #char "_"; }
+is_binary_or_underscore      :: (c : u8) -> bool { return is_binary(c)      || c == #char "_"; }
+is_hexadecimal_or_underscore :: (c : u8) -> bool { return is_hexadecimal(c) || c == #char "_"; }
 
 

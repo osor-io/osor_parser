@@ -105,24 +105,21 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             {
                 return null, false, error(token, "Expected Integer but found %", token.type);
             }
-            value, success, remainder := to_integer(token.text);
-            assert(success);
-            assert(remainder.count == 0);
-            if negate  value = -value;
+            value, integer_parse_success, integer_parse_error := token_to_integer(token);
+            if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
             if info_int.signed  
             {
-                if      info.runtime_size == 1 { v := cast,trunc(s8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 2 { v := cast,trunc(s16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 4 { v := cast,trunc(s32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 8 { v := cast,trunc(s64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                signed_value := cast(s64)value;
+                if negate then signed_value = -signed_value;
+                if      info.runtime_size == 1 { v := cast,trunc(s8)  signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 2 { v := cast,trunc(s16) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 4 { v := cast,trunc(s32) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 8 { v := cast,trunc(s64) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
             else
             {
-                if value < 0  
-                {
-                    return null, false, error(token, "Setting negative value (%) on unsigned member", value);
-                }
+                if negate then return null, false, error(token, "Setting negative value (%) on unsigned member", value);
                 if      info.runtime_size == 1 { v := cast,trunc(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else if info.runtime_size == 2 { v := cast,trunc(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else if info.runtime_size == 4 { v := cast,trunc(u32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
@@ -148,23 +145,50 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             {
                 return null, false, error(token, "Expected Integer or Float but found %", token.type);
             }
-            value_64, success, remainder := string_to_float64(token.text);
+            value_f64, success, remainder := string_to_float64(token.text);
             assert(success);
             assert(remainder.count == 0);
-            if negate  value_64 = -value_64;
+            if negate then value_f64 = -value_f64;
+            token += 1;
+            if token.type == .Hash
+            {
+                token += 1;
+                if token.type == .Integer
+                {
+                    value_u64, integer_parse_success, integer_parse_error := token_to_integer(token);
+                    if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
+                    value_u64_as_f64 := <<(cast(*float64)(*value_u64));
+                    diff := value_f64 - value_u64_as_f64;
+                    if diff < 0 then diff = -diff;
+                    value_f64_positive := ifx value_f64 < 0 then -value_f64 else value_f64;
+                    THRESHOLD_BASED_ON_F32_PRECISSION :: 0.000001;
+                    if (diff / value_f64_positive) > THRESHOLD_BASED_ON_F32_PRECISSION 
+                    {
+                        return null, false, error(token, "The floating point value embedded as bytes (after #) differs too much from the actual number written (difference was %), if you edited the file you should delete the # and the integer after", diff);
+                    }
+                    else
+                    {
+                        value_f64 = value_u64_as_f64;
+                    }
+                    token += 1;
+                }
+                else
+                {
+                    return null, false, error(token, "Expected Integer as the int representation of a float (after a #) but found %", token.type);
+                }
+            }
             if info.runtime_size == 8
             {
-                assert(info.runtime_size == size_of(type_of(value_64)));
-                memcpy(value_pointer, *value_64, size_of(type_of(value_64)));
+                assert(info.runtime_size == size_of(type_of(value_f64)));
+                memcpy(value_pointer, *value_f64, size_of(type_of(value_f64)));
             }
             else if info.runtime_size == 4
             {
-                value_32 := cast(float32) value_64;
+                value_32 := cast(float32) value_f64;
                 assert(info.runtime_size == size_of(type_of(value_32)));
                 memcpy(value_pointer, *value_32, size_of(type_of(value_32)));
             }
             else assert(false);
-            token += 1;
 
 
 
@@ -210,38 +234,49 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             case .ENUM;
             enum_info := cast(*Type_Info_Enum) info;
             value : type_of(enum_info.values[0]);
-            if token.type == .Identifier
+            first_enum_token := token;
+            while true
             {
-                enum_index := -1;
-                for enum_info.names  
-                    if it == token.text  
-                        enum_index = it_index;
-                if enum_index < 0
+                if token.type == .Identifier
                 {
-                    return null, false, error(token, "Enum value % didn't match any of the possible values for %", token.text, enum_info.name);
+                    enum_index := -1;
+                    for enum_info.names  
+                        if it == token.text  
+                            enum_index = it_index;
+                    if enum_index < 0
+                    {
+                        return null, false, error(token, "Enum value % didn't match any of the possible values for %", token.text, enum_info.name);
+                    }
+                    value |= enum_info.values[enum_index];
                 }
-                value = enum_info.values[enum_index];
-            }
-            else if token.type == .String
-            {
-                if token.text.count != 1
+                else if token.type == .String
                 {
-                    return null, false, error(token, "Enum value passed as string % must be a single character", token.text);
+                    if token.text.count != 1
+                    {
+                        return null, false, error(token, "Enum value passed as string % must be a single character", token.text);
+                    }
+                    value |= xx token.text[0];
                 }
-                value = xx token.text[0];
+                else if token.type == .Integer
+                {
+                    int_value, integer_parse_success, integer_parse_error := token_to_integer(token);
+                    if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
+                    value |= xx int_value;
+                }
+                else
+                {
+                    return null, false, error(token, "Expected Identifier but found %", token.type);
+                }
+                token += 1;
+                if (enum_info.enum_type_flags & .FLAGS) && token.type == .Vertical_Slash
+                {
+                    token += 1;
+                }
+                else
+                {
+                    break;
+                }
             }
-            else if token.type == .Integer
-            {
-                int_value, success, remainder := to_integer(token.text);
-                assert(success);
-                assert(remainder.count == 0);
-                value = xx int_value;
-            }
-            else
-            {
-                return null, false, error(token, "Expected Identifier but found %", token.type);
-            }
-
             signed := enum_info.internal_type.signed;
             if signed
             {
@@ -255,7 +290,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             {
                 if value < 0  
                 {
-                    return null, false, error(token, "Setting negative value (%) on unsigned member", value);
+                    return null, false, error(first_enum_token, "Setting negative value (%) on unsigned member", value);
                 }
                 if      info.runtime_size == 1 { v := cast,trunc(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else if info.runtime_size == 2 { v := cast,trunc(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
@@ -263,7 +298,6 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 else if info.runtime_size == 8 { v := cast,trunc(u64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
-            token += 1;
 
 
 
@@ -300,13 +334,12 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             indicated_size_on_file := -1;
             if token.type == .Integer
             {
-                value, success, remainder := to_integer(token.text);
-                assert(success);
-                assert(remainder.count == 0);
+                value, integer_parse_success, integer_parse_error := token_to_integer(token);
+                if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
                 if value < 0
                     return null, false, error(token, "Requested array to have negative size '%', ignoring", value);
                 else
-                    indicated_size_on_file = value;
+                    indicated_size_on_file = cast(s64)value;
                 token += 1;
             }
             if token.type != .Open_Brackets
@@ -508,12 +541,12 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
 
 
+            case .PROCEDURE;            #through;
             case .VOID;                 #through;
             case .OVERLOAD_SET;         #through;
             case .ANY;                  #through;
             case .POLYMORPHIC_VARIABLE; #through;
             case .TYPE;                 #through;
-            case .PROCEDURE;            #through;
             case .CODE;
             return null, false, error(token, "Requesting parsing of unsupported type '%'", info.type);
         }
@@ -525,6 +558,209 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             complete_message := tprint("%\n    line %: %\n", user_message, token.line.number, token.line.text);
             return complete_message;
         } @PrintLike
+    }
+}
+
+
+
+unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsing := () -> bool #expand { return false; }) -> success : bool, error : string
+{
+    info := type_info(Data_Type);
+    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
+
+    successful_unparse, unparse_error := unparse_one(builder, info, data, depth = 0, brackets_on_struct = false);
+    if !successful_unparse then return false, unparse_error;
+
+    return true, "";
+
+    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, brackets_on_struct := true) -> success : bool #must, error : string #must
+    {
+        if #complete info.type == 
+        {
+            case .INTEGER;
+            format : FormatInt;
+            format.value.type = info;
+            format.value.value_pointer = value_pointer;
+            print_integer(builder, format);
+
+
+
+            case .FLOAT;
+            format : FormatFloat;
+            format.value.type = info;
+            format.value.value_pointer = value_pointer;
+            print_float(builder, format);
+            append(builder, " # ");
+            float_value_as_u64 : u64;
+            if      info.runtime_size == 4 { float_value_as_f64 := cast(float64)<<cast(*float32)value_pointer; float_value_as_u64 = <<cast(*u64)*float_value_as_f64; }
+            else if info.runtime_size == 8 { float_value_as_f64 := cast(float64)<<cast(*float64)value_pointer; float_value_as_u64 = <<cast(*u64)*float_value_as_f64; }
+            else assert(false);
+            append(builder, "0x");
+            print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 });
+            append(builder, " // Remove the # and the number after it when editing");
+
+
+
+            case .BOOL;
+            if <<(cast(*bool)value_pointer) then append(builder, "true"); else append(builder, "false");
+
+
+
+            case .STRING;
+            the_string := <<(cast(*string)value_pointer);
+            append(builder, "\"");
+            append(builder, the_string);
+            append(builder, "\"");
+
+
+
+            case .POINTER;
+            pointer_info := cast(*Type_Info_Pointer)info;
+            the_pointer := <<(cast(**void)value_pointer);
+            successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth);
+            if !successful_pointer_unparse then return false, pointer_unparse_error;
+
+
+
+            case .STRUCT;
+            struct_info := cast(*Type_Info_Struct)info;
+            default_value := talloc(struct_info.runtime_size);
+            if struct_info.initializer then struct_info.initializer(default_value); else memset(default_value, 0, struct_info.runtime_size);
+            handled_by_custom_parsing := custom_struct_parsing();
+            if !handled_by_custom_parsing
+            {
+                added_any_members := false;
+                if brackets_on_struct then append(builder, "{");
+                for member : struct_info.members
+                {
+                    if !(member.flags & .CONSTANT)
+                    {
+                        member_value_pointer := value_pointer + member.offset_in_bytes;
+                        is_default := memcmp(member_value_pointer, default_value + member.offset_in_bytes, member.type.runtime_size) == 0;
+                        if !is_default
+                        {
+                            if !added_any_members
+                            {
+                                added_any_members = true;
+                                if brackets_on_struct then append(builder, "\n");
+                            }
+                            if (member.flags & .USING)
+                            {
+                                successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, brackets_on_struct = false);
+                                if !successful_member_unparse then return false, member_unparse_error;
+                            }
+                            else
+                            {
+                                append_indentation(builder, depth);
+                                append(builder, member.name);
+                                append(builder, " = ");
+                                successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1);
+                                if !successful_member_unparse then return false, member_unparse_error;
+                                append(builder, "\n");
+                            }
+                        }
+                    }
+                }
+                if brackets_on_struct
+                {
+                    if added_any_members then append_indentation(builder, depth - 1);
+                    append(builder, "}");
+                }
+            }
+
+
+                
+            case .ARRAY;
+            array_info := cast(*Type_Info_Array)info;
+            if array_info.relative_pointer_size != 0 then return false, "We don't support unparsing arrays with using relative pointers";
+            array_view := cast(*Array_View_64)value_pointer;
+            print_integer(builder, FormatInt.{ value = array_view.count });
+            append(builder, " [\n");
+            for 0..array_view.count-1
+            {
+                append_indentation(builder, depth);
+                array_element_value_pointer := array_view.data + (array_info.element_type.runtime_size * it);
+                successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1);
+                if !successful_element_unparse then return false, element_unparse_error;
+                append(builder, ",\n");
+            }
+            append_indentation(builder, depth - 1);
+            append(builder, "]");
+
+
+
+            case .ENUM;
+            enum_info := cast(*Type_Info_Enum)info;
+            enum_value : s64;
+            if      info.runtime_size == 1 { enum_value = cast(s64)<<(cast(*s8) value_pointer); }
+            else if info.runtime_size == 2 { enum_value = cast(s64)<<(cast(*s16)value_pointer); }
+            else if info.runtime_size == 4 { enum_value = cast(s64)<<(cast(*s32)value_pointer); }
+            else if info.runtime_size == 8 { enum_value = cast(s64)<<(cast(*s64)value_pointer); }
+            else assert(false);
+            if (enum_info.enum_type_flags & .FLAGS)
+            {
+                remaining_value := enum_value;
+                for enum_info.values
+                {
+                    if (remaining_value & it)
+                    {
+                        if remaining_value != enum_value then append(builder, " | "); 
+                        append(builder, enum_info.names[it_index]);
+                        remaining_value &= ~it;
+                    }
+                }
+                if remaining_value != 0
+                {
+                    if remaining_value != enum_value then append(builder, " | "); 
+                    append(builder, "0x");
+                    print_integer(builder, FormatInt.{ value = remaining_value, base = 16});
+                }
+            }
+            else
+            {
+                found := false;
+                for enum_info.values
+                {
+                    if enum_value == it
+                    {
+                        append(builder, enum_info.names[it_index]);
+                        found = true;
+                    }
+                }
+                if !found
+                {
+                    format : FormatInt;
+                    format.value.type = enum_info.internal_type;
+                    format.value.value_pointer = value_pointer;
+                    print_integer(builder, format);
+                }
+            }
+
+
+
+            case .VARIANT;
+            variant_info := cast(*Type_Info_Variant)info;
+            successful_variant_unparse, variant_unparse_error := unparse_one(builder, variant_info.variant_of, value_pointer, depth);
+            if !successful_variant_unparse then return false, variant_unparse_error;
+
+
+
+            case .PROCEDURE;            #through;
+            case .VOID;                 #through;
+            case .OVERLOAD_SET;         #through;
+            case .ANY;                  #through;
+            case .POLYMORPHIC_VARIABLE; #through;
+            case .TYPE;                 #through;
+            case .CODE;
+            return false, tprint("Requesting unparsing of unsupported type '%'", info.type);
+        }
+
+        return true, "";
+
+        append_indentation :: (builder : *String_Builder, depth : int)
+        {
+            for 0..depth-1 append(builder, "    ");
+        }
     }
 }
 
