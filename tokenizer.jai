@@ -344,8 +344,7 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
             if      c == #char "0" then value = 0;
             else if c == #char "1" then value = 1;
             else return 0, false, "Non base 2 value in base 2 number";
-            sum *= base;
-            sum += value;
+            sum = add_checking_for_overflow(sum, base = 2, value);
         }
 
         case 10;
@@ -355,8 +354,7 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
             value : u8 = ---;
             if is_digit(c) then value = c - #char "0";
             else return 0, false, "Non base 10 value in base 10 number";
-            sum *= base;
-            sum += value;
+            sum = add_checking_for_overflow(sum, base = 10, value);
         }
 
         case 16;
@@ -368,12 +366,20 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
             else if (c >= #char "a") && (c <= #char "f") then value = c - #char "a" + 10;
             else if (c >= #char "A") && (c <= #char "F") then value = c - #char "A" + 10;
             else return 0, false, "Non base 16 value in base 16 number"; 
-            sum *= base;
-            sum += value;
+            sum = add_checking_for_overflow(sum, base = 16, value);
         }
     }
 
     return sum, true, "";
+
+    add_checking_for_overflow :: (sum : u64, $base : u64, value : u64) -> u64 #expand
+    {
+        if sum > (~(cast(u64)0) / base)  then `return 0, false, "Number overflows an unsigned 64-bit integer";
+        sum *= base;
+        if sum > (~(cast(u64)0) - value) then `return 0, false, "Number overflows an unsigned 64-bit integer";
+        sum += value;
+        return sum;
+    }
 }
 
 
