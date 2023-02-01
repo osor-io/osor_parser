@@ -563,7 +563,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
 
 
-unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsing := () -> bool #expand { return false; }) -> success : bool, error : string
+unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unparsing := () -> bool #expand { return false; }) -> success : bool, error : string
 {
     info := type_info(Data_Type);
     if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
@@ -597,7 +597,6 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsin
             else assert(false);
             append(builder, "0x");
             print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 });
-            append(builder, " // Remove the # and the number after it when editing");
 
 
 
@@ -626,37 +625,42 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsin
             struct_info := cast(*Type_Info_Struct)info;
             default_value := talloc(struct_info.runtime_size);
             if struct_info.initializer then struct_info.initializer(default_value); else memset(default_value, 0, struct_info.runtime_size);
-            handled_by_custom_parsing := custom_struct_parsing();
+            handled_by_custom_parsing := custom_struct_unparsing();
             if !handled_by_custom_parsing
             {
                 added_any_members := false;
                 if brackets_on_struct then append(builder, "{");
+                max_member_offset_written := -1;
                 for member : struct_info.members
                 {
                     if !(member.flags & .CONSTANT)
                     {
-                        member_value_pointer := value_pointer + member.offset_in_bytes;
-                        is_default := memcmp(member_value_pointer, default_value + member.offset_in_bytes, member.type.runtime_size) == 0;
-                        if !is_default
+                        if member.offset_in_bytes > max_member_offset_written
                         {
-                            if !added_any_members
+                            max_member_offset_written = member.offset_in_bytes + max(member.type.runtime_size - 1, 0);
+                            member_value_pointer := value_pointer + member.offset_in_bytes;
+                            is_default := memcmp(member_value_pointer, default_value + member.offset_in_bytes, member.type.runtime_size) == 0;
+                            if !is_default
                             {
-                                added_any_members = true;
-                                if brackets_on_struct then append(builder, "\n");
-                            }
-                            if (member.flags & .USING)
-                            {
-                                successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, brackets_on_struct = false);
-                                if !successful_member_unparse then return false, member_unparse_error;
-                            }
-                            else
-                            {
-                                append_indentation(builder, depth);
-                                append(builder, member.name);
-                                append(builder, " = ");
-                                successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1);
-                                if !successful_member_unparse then return false, member_unparse_error;
-                                append(builder, "\n");
+                                if !added_any_members
+                                {
+                                    added_any_members = true;
+                                    if brackets_on_struct then append(builder, "\n");
+                                }
+                                if (member.flags & .USING)
+                                {
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, brackets_on_struct = false);
+                                    if !successful_member_unparse then return false, member_unparse_error;
+                                }
+                                else
+                                {
+                                    append_indentation(builder, depth);
+                                    append(builder, member.name);
+                                    append(builder, " = ");
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1);
+                                    if !successful_member_unparse then return false, member_unparse_error;
+                                    append(builder, "\n");
+                                }
                             }
                         }
                     }
@@ -676,13 +680,22 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsin
             array_view := cast(*Array_View_64)value_pointer;
             print_integer(builder, FormatInt.{ value = array_view.count });
             append(builder, " [\n");
+            line_break_every_n_elements := 1;
+            if array_info.element_type.type == 
+            {
+                case .INTEGER; line_break_every_n_elements = 10;
+                case .FLOAT;   line_break_every_n_elements = 3;
+                case .BOOL;    line_break_every_n_elements = 15;
+                case .STRING;  line_break_every_n_elements = 5;
+                case .ENUM;    line_break_every_n_elements = 10;
+            }
             for 0..array_view.count-1
             {
-                append_indentation(builder, depth);
+                if it == 0 || (max(it-1, 0) % line_break_every_n_elements) == (line_break_every_n_elements-1) then append_indentation(builder, depth);
                 array_element_value_pointer := array_view.data + (array_info.element_type.runtime_size * it);
                 successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1);
                 if !successful_element_unparse then return false, element_unparse_error;
-                append(builder, ",\n");
+                if it == array_view.count-1 || (it % line_break_every_n_elements) == (line_break_every_n_elements-1) then append(builder, ",\n"); else append(builder, ", ");
             }
             append_indentation(builder, depth - 1);
             append(builder, "]");
@@ -725,6 +738,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_parsin
                     {
                         append(builder, enum_info.names[it_index]);
                         found = true;
+                        break;
                     }
                 }
                 if !found
