@@ -4,6 +4,8 @@ A wee parsing module for the Jai programming language. You can check the code in
 
 ## How To
 
+### Parse
+
 The idea is to go from a string (from a file or some whatever data) to a struct variable filled with the data on the file. So if we had a struct like this:
 ```
 Settings :: struct
@@ -28,6 +30,14 @@ parse(file, *settings);
 
 A really useful mix is combining this with Jai's `File_Watcher` module, which notifies you when files get changed. With a few lines you can end up with a hotloaded file with any arbitrary data for those juicy iteration times. 
 
+### Unparse
+
+You can also do the reverse operation going from a variable to a string. This is especially useful if you want to do something like loading a file, edit it or let the values change during the execution of your program then export that same file with the modifications. Following the example above you could do:
+```
+builder : String_Builder;
+unparse(*builder, *settings);
+write_file("my.settings", builder_to_string(*builder));
+```
 
 ## License
 
