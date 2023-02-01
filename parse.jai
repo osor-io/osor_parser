@@ -586,7 +586,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
 
             case .FLOAT;
-            format : FormatFloat;
+            format := FormatFloat.{ trailing_width = 15 };
             format.value.type = info;
             format.value.value_pointer = value_pointer;
             print_float(builder, format);
