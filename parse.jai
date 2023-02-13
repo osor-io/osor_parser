@@ -586,17 +586,19 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
 
             case .FLOAT;
+            float_value_as_f64 : float64;
+            if      info.runtime_size == 4 { float_value_as_f64 = cast(float64)<<cast(*float32)value_pointer; }
+            else if info.runtime_size == 8 { float_value_as_f64 = cast(float64)<<cast(*float64)value_pointer; }
+            else assert(false);
+            float_value_as_u64 := <<cast(*u64)*float_value_as_f64;
             format := FormatFloat.{ trailing_width = 15 };
             format.value.type = info;
             format.value.value_pointer = value_pointer;
+            if float_value_as_f64 >= 0.0 then append(builder, " ");
             print_float(builder, format);
             append(builder, " # ");
-            float_value_as_u64 : u64;
-            if      info.runtime_size == 4 { float_value_as_f64 := cast(float64)<<cast(*float32)value_pointer; float_value_as_u64 = <<cast(*u64)*float_value_as_f64; }
-            else if info.runtime_size == 8 { float_value_as_f64 := cast(float64)<<cast(*float64)value_pointer; float_value_as_u64 = <<cast(*u64)*float_value_as_f64; }
-            else assert(false);
             append(builder, "0x");
-            print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 });
+            print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
 
 
 
