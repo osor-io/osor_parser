@@ -291,6 +291,10 @@ Big_Boy_Test :: struct
         ARE;
         WADDUP;
         FLAGS;
+        THESE_ARE :: THESE | ARE;
+        ARE_FLAGS :: ARE | FLAGS;
+        THESE_ARE_FLAGS :: THESE | ARE | FLAGS;
+        YO_THESE_ARE_FLAGS :: YO | THESE | ARE | FLAGS;
     }
 
     Simple :: struct

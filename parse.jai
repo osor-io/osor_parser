@@ -714,21 +714,23 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
             else assert(false);
             if (enum_info.enum_type_flags & .FLAGS)
             {
-                remaining_value := enum_value;
+                written_flags := 0;
                 for enum_info.values
                 {
-                    if (remaining_value & it)
+                    if (enum_value & it) == it
                     {
-                        if remaining_value != enum_value then append(builder, " | "); 
+                        if written_flags != 0 then append(builder, " | "); 
                         append(builder, enum_info.names[it_index]);
-                        remaining_value &= ~it;
+                        written_flags |= it;
                     }
                 }
-                if remaining_value != 0
+                remaining := enum_value & ~written_flags;
+                if remaining != 0
                 {
-                    if remaining_value != enum_value then append(builder, " | "); 
+                    if written_flags != 0 then append(builder, " | "); 
                     append(builder, "0x");
-                    print_integer(builder, FormatInt.{ value = remaining_value, base = 16});
+                    print_integer(builder, FormatInt.{ value = remaining, base = 16 });
+                    written_flags |= remaining;
                 }
             }
             else
