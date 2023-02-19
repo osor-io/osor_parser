@@ -151,6 +151,30 @@ big_boy_parsing :: ()
 
     d = ["string a", "string b"]
     c = "why not another string"
+
+    //
+    // If an @ is followed by a single chracter it will be interpreted as a string, with that character acting as 
+    // the delimiter for it instead of the usual "" chars. This exists because it's useful when your string contains
+    // many characters that you would usually have to escape with backlash. This kind of syntax is analogous to the
+    // #string directive, check 005_strings.jai in the how_to's if you want to know more. You can use a backlash 
+    // in front of your delimiter to include it inside your string.
+    //
+    e = @#"Wow! This is going to be so useful!" - You, the user, for the \#69105 time.#
+
+    //
+    // If you start a new line right after declaring your delimiter it will not be included by default!
+    //
+    f = @#
+Something amorphous and consummate
+existed before Heaven and Earth.
+Solitude! Vast!
+Standing alone, unaltering.
+Going everywhere, yet unthreatened.
+It can be considered the Mother of the World.
+I don't know its name, so I designate it, “Tao”.
+Compelled to consider it, name it “the Great”.
+#
+
     test_enum = VALUE_C // You can put enum names directly, the name will be matched and filled with the value
 
     test_enum_flags = THESE | ARE | FLAGS | 0xF000 // You can put flags into an enum flags with '|'
@@ -210,6 +234,8 @@ big_boy_unparsing :: ()
     test.b = -123.123;
     test.c = "a string";
     test.d = .["a", "b", "c", "easy as", "one", "two", "three"];
+    test.e = "Yet another normal string";
+    test.f = "Nothing fancy happens with here strings when unparsing!";
     test.variant = 0xFFAA;
     test.array_of_structs = .[ .{}, .{}, .{data_1 = 123, data_4 = 100, some_strings = .["some", "strings"]}];
     test.one_of_these.data_1 = 11111;
@@ -253,6 +279,8 @@ Big_Boy_Test :: struct
     b2 := 1.0;
     c := "just a string";
     d : [] string;
+    f := "here be another string";
+    e := "watch me get much fancier soon";
     variant : A_Testing_Variant = xx 1122334455;
     array_of_structs : [] Some_More_Data;
     one_of_these : Some_More_Data;
