@@ -678,7 +678,6 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
                 
             case .ARRAY;
             array_info := cast(*Type_Info_Array)info;
-            if array_info.relative_pointer_size != 0 then return false, "We don't support unparsing arrays with using relative pointers";
             array_view := cast(*Array_View_64)value_pointer;
             print_integer(builder, FormatInt.{ value = array_view.count });
             append(builder, " [\n");
