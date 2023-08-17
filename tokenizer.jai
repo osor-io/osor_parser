@@ -113,6 +113,58 @@ tokenize_all_tokens :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type
 
 tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type = .[.Whitespace, .Comment]) -> Token, error : string
 {
+    get :: (tokenizer : *Tokenizer) -> u8
+    {
+        if tokenizer.current.count <= 0 then return 0;
+        return tokenizer.current.data.*;
+    }
+
+    peek :: (tokenizer : *Tokenizer, forward := 1) -> u8
+    {
+        if forward >= tokenizer.current.count then return 0;
+        return (tokenizer.current.data + forward).*;
+    }
+
+    advance :: () #expand
+    {
+        if tokenizer.current.count <= 0 then `return .{}, error("Unexpected end of text in line %, maybe a block like a string or comment aren't closed?", tokenizer.current_line);
+        advancing_line := get(tokenizer) == #char "\n";
+        tokenizer.current.data  += 1;
+        tokenizer.current.count -= 1;
+        if advancing_line
+        {
+            tokenizer.current_line.number += 1;
+            found : bool;
+            found, tokenizer.current_line.text = split_from_left_by_any(tokenizer.current, "\n\r\0");
+        }
+    }
+
+    found_token :: (type : Token.Type) #expand
+    {
+        token : Token;
+        token.type = type;
+        token.line = tokenizer.current_line;
+        token.text.data = tokenizer.beginning_of_current_token;
+        token.text.count = tokenizer.current.data - tokenizer.beginning_of_current_token;
+        tokenizer.beginning_of_current_token = tokenizer.current.data;
+        ignore := false;
+        for tokens_to_ignore  
+            if token.type == it  
+                ignore = true;
+        if !ignore then result_token = token;
+    }
+
+    is_operator :: (tokenizer : *Tokenizer, $operator_string : string) -> bool
+    {
+        #assert(operator_string.count == 1);
+        return get(tokenizer) == operator_string.data.*;
+    }
+    
+    error :: (format : string, arguments : .. Any) -> string
+    {
+        return tprint(format, ..arguments);
+    } @PrintLike
+
     result_token : Token;
 
     using Token.Type;
@@ -239,58 +291,6 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
     }
     found_token(End);
     return result_token, "";
-
-    get :: (tokenizer : *Tokenizer) -> u8
-    {
-        if tokenizer.current.count <= 0 then return 0;
-        return <<tokenizer.current.data;
-    }
-
-    peek :: (tokenizer : *Tokenizer, forward := 1) -> u8
-    {
-        if forward >= tokenizer.current.count then return 0;
-        return <<(tokenizer.current.data + forward);
-    }
-
-    advance :: () #expand
-    {
-        if tokenizer.current.count <= 0 then `return .{}, error("Unexpected end of text in line %, maybe a block like a string or comment aren't closed?", tokenizer.current_line);
-        advancing_line := get(tokenizer) == #char "\n";
-        tokenizer.current.data  += 1;
-        tokenizer.current.count -= 1;
-        if advancing_line
-        {
-            tokenizer.current_line.number += 1;
-            found : bool;
-            found, tokenizer.current_line.text = split_from_left_by_any(tokenizer.current, "\n\r\0");
-        }
-    }
-
-    found_token :: (type : Token.Type) #expand
-    {
-        token : Token;
-        token.type = type;
-        token.line = tokenizer.current_line;
-        token.text.data = tokenizer.beginning_of_current_token;
-        token.text.count = tokenizer.current.data - tokenizer.beginning_of_current_token;
-        tokenizer.beginning_of_current_token = tokenizer.current.data;
-        ignore := false;
-        for tokens_to_ignore  
-            if token.type == it  
-                ignore = true;
-        if !ignore then result_token = token;
-    }
-
-    is_operator :: (tokenizer : *Tokenizer, $operator_string : string) -> bool
-    {
-        #assert(operator_string.count == 1);
-        return get(tokenizer) == <<operator_string.data;
-    }
-    
-    error :: (format : string, arguments : .. Any) -> string
-    {
-        return tprint(format, ..arguments);
-    } @PrintLike
 }
 
 
@@ -334,6 +334,14 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
     }
 
     sum : u64 = 0;
+    add_checking_for_overflow :: (sum : u64, $base : u64, value : u64) -> u64 #expand
+    {
+        if sum > (~(cast(u64)0) / base)  then `return 0, false, "Number overflows an unsigned 64-bit integer";
+        sum *= base;
+        if sum > (~(cast(u64)0) - value) then `return 0, false, "Number overflows an unsigned 64-bit integer";
+        sum += value;
+        return sum;
+    }
     if base ==
     {
         case 2;
@@ -371,15 +379,6 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
     }
 
     return sum, true, "";
-
-    add_checking_for_overflow :: (sum : u64, $base : u64, value : u64) -> u64 #expand
-    {
-        if sum > (~(cast(u64)0) / base)  then `return 0, false, "Number overflows an unsigned 64-bit integer";
-        sum *= base;
-        if sum > (~(cast(u64)0) - value) then `return 0, false, "Number overflows an unsigned 64-bit integer";
-        sum += value;
-        return sum;
-    }
 }
 
 

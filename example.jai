@@ -185,10 +185,10 @@ big_boy_parsing :: ()
     result : Big_Boy_Test;
     success, error := parse(TEST_STRING, *result, PARSE_SETTINGS_WITH_ALLOCATIONS, custom_struct_parsing); // See custom_struct_parsing below
     if !success then log_error(error);
-    assert(<<result.pointer_to_int == 99119911);
+    assert(result.pointer_to_int.* == 99119911);
     print("Whole struct = %\n", formatStruct(result,use_newlines_if_long_form=true));
-    print("Dereferencing pointer to an int = %\n", <<result.pointer_to_int);
-    print("Dereferencing pointer to complex data = %\n", <<result.pointer_to_some_more_data);
+    print("Dereferencing pointer to an int = %\n", result.pointer_to_int.*);
+    print("Dereferencing pointer to complex data = %\n", result.pointer_to_some_more_data.*);
     print("Messing with the dynamically allocated array on the struct:\n");
     print("  The dynamic array before adding some elements: %\n", result.dynamic_array);
     print("  Allocated count before adding some elements: %\n", result.dynamic_array.allocated);
@@ -379,7 +379,7 @@ custom_struct_unparsing :: () -> bool #expand
         if original_string
         {
             append(`builder, "\"");
-            append(`builder, <<original_string);
+            append(`builder, original_string.*);
             append(`builder, "\"");
         }
         else

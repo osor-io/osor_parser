@@ -65,28 +65,15 @@ PARSE_SETTINGS_WITH_ALLOCATIONS :: Parse_Settings.
 
 parse :: (the_string : string, result : *$Result_Type, settings := Parse_Settings.{}, $custom_struct_parsing := () -> bool #expand { return false; }) -> success : bool, error : string
 {
-    tokenizer : Tokenizer;
-    init_tokenizer(*tokenizer, the_string);
-    tokens, tokenize_success, tokenize_error := tokenize_all_tokens(*tokenizer);
-    if !tokenize_success then return false, tokenize_error;
-    defer array_reset(*tokens);
-
-    info := type_info(Result_Type);
-    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
-
-    token := tokens.data;
-    while token && token.type != .End
-    {
-        successful_parse : bool;
-        parse_error : string;
-        token, successful_parse, parse_error = parse_one(token, info, result, settings, is_first_call = true);
-        if !successful_parse then return false, parse_error;
-    }
-
-    return true, "";
-
     parse_one :: (token : *Token, info : *Type_Info, value_pointer : *void, settings : Parse_Settings, is_first_call := false) -> *Token #must, success : bool #must, error : string #must
     {
+        error :: (token : *Token, format : string, arguments : .. Any) -> string
+        {
+            user_message := tprint(format, ..arguments);
+            complete_message := tprint("%\n    line %: %\n", user_message, token.line.number, token.line.text);
+            return complete_message;
+        } @PrintLike
+
         if #complete info.type == 
         {
             case .INTEGER;
@@ -157,7 +144,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 {
                     value_u64, integer_parse_success, integer_parse_error := token_to_integer(token);
                     if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
-                    value_u64_as_f64 := <<(cast(*float64)(*value_u64));
+                    value_u64_as_f64 := (cast(*float64)(*value_u64)).*;
                     diff := value_f64 - value_u64_as_f64;
                     if diff < 0 then diff = -diff;
                     value_f64_positive := ifx value_f64 < 0 then -value_f64 else value_f64;
@@ -353,9 +340,9 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             {
                 case .FIXED;
                 static_size = *array_info.array_count;
-                if indicated_size_on_file != -1 && <<static_size != indicated_size_on_file
+                if indicated_size_on_file != -1 && static_size.* != indicated_size_on_file
                 {
-                    return null, false, error(token, "Indicated size on file (%) is different than the size of the fixed array (%)", indicated_size_on_file, <<static_size);
+                    return null, false, error(token, "Indicated size on file (%) is different than the size of the fixed array (%)", indicated_size_on_file, static_size.*);
                 }
 
                 case .VIEW; #through;
@@ -373,7 +360,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             if static_size
             {
                 array_data.data = value_pointer;
-                array_data.allocated = <<static_size;
+                array_data.allocated = static_size.*;
             }
             else if indicated_size_on_file != -1
             {
@@ -395,7 +382,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 {
                     if static_size
                     {
-                        return null, false, error(token, "Trying to add too many elements to static array of size %\n", <<static_size);
+                        return null, false, error(token, "Trying to add too many elements to static array of size %\n", static_size.*);
                     }
                     else if indicated_size_on_file != -1
                     {
@@ -433,9 +420,9 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             {
                 case .FIXED;
                 assert(static_size != null);
-                if array_data.count != <<static_size
+                if array_data.count != static_size.*
                 {
-                    return null, false, error(token, "Not enough elements provided (%) for array of static size %", array_data.count, <<static_size);
+                    return null, false, error(token, "Not enough elements provided (%) for array of static size %", array_data.count, static_size.*);
                 }
                 size := array_data.count * array_type.runtime_size;
                 assert(info.runtime_size == size);
@@ -495,19 +482,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                         return null, false, error(token, "Expected equals but found % instead", token.type);
                     }
                     token += 1;
-
-                    contained_type, offset_in_bytes := find_member(member_name, struct_info);
-                    if !contained_type
-                    {
-                        return null, false, error(token, "Didn't find member '%' in struct '%' to fill in", member_name, struct_info.name);
-                    }
-                    member_pointer := value_pointer;
-                    member_pointer += offset_in_bytes;
-                    successful_parse : bool;
-                    member_parse_error : string;
-                    token, successful_parse, member_parse_error = parse_one(token, contained_type, member_pointer, settings);
-                    if !successful_parse then return token, false, member_parse_error;
-
+                    
                     find_member :: (name : string, struct_info : *Type_Info_Struct) -> *Type_Info, total_offset : int
                     {
                         for * struct_info.members
@@ -527,6 +502,18 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                         }
                         return null, 0;
                     }
+
+                    contained_type, offset_in_bytes := find_member(member_name, struct_info);
+                    if !contained_type
+                    {
+                        return null, false, error(token, "Didn't find member '%' in struct '%' to fill in", member_name, struct_info.name);
+                    }
+                    member_pointer := value_pointer;
+                    member_pointer += offset_in_bytes;
+                    successful_parse : bool;
+                    member_parse_error : string;
+                    token, successful_parse, member_parse_error = parse_one(token, contained_type, member_pointer, settings);
+                    if !successful_parse then return token, false, member_parse_error;
                 }
             }
 
@@ -551,30 +538,40 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             return null, false, error(token, "Requesting parsing of unsupported type '%'", info.type);
         }
         return token, true, "";
-
-        error :: (token : *Token, format : string, arguments : .. Any) -> string
-        {
-            user_message := tprint(format, ..arguments);
-            complete_message := tprint("%\n    line %: %\n", user_message, token.line.number, token.line.text);
-            return complete_message;
-        } @PrintLike
     }
+
+    tokenizer : Tokenizer;
+    init_tokenizer(*tokenizer, the_string);
+    tokens, tokenize_success, tokenize_error := tokenize_all_tokens(*tokenizer);
+    if !tokenize_success then return false, tokenize_error;
+    defer array_reset(*tokens);
+
+    info := type_info(Result_Type);
+    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
+
+    token := tokens.data;
+    while token && token.type != .End
+    {
+        successful_parse : bool;
+        parse_error : string;
+        token, successful_parse, parse_error = parse_one(token, info, result, settings, is_first_call = true);
+        if !successful_parse then return false, parse_error;
+    }
+
+    return true, "";
 }
 
 
 
 unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unparsing := () -> bool #expand { return false; }) -> success : bool, error : string
 {
-    info := type_info(Data_Type);
-    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
-
-    successful_unparse, unparse_error := unparse_one(builder, info, data, depth = 0, brackets_on_struct = false);
-    if !successful_unparse then return false, unparse_error;
-
-    return true, "";
-
     unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, brackets_on_struct := true) -> success : bool #must, error : string #must
     {
+        append_indentation :: (builder : *String_Builder, depth : int)
+        {
+            for 0..depth-1 append(builder, "    ");
+        }
+
         if #complete info.type == 
         {
             case .INTEGER;
@@ -587,10 +584,10 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
             case .FLOAT;
             float_value_as_f64 : float64;
-            if      info.runtime_size == 4 { float_value_as_f64 = cast(float64)<<cast(*float32)value_pointer; }
-            else if info.runtime_size == 8 { float_value_as_f64 = cast(float64)<<cast(*float64)value_pointer; }
+            if      info.runtime_size == 4 { float_value_as_f64 = cast(float64)(cast(*float32)value_pointer).*; }
+            else if info.runtime_size == 8 { float_value_as_f64 = cast(float64)(cast(*float64)value_pointer).*; }
             else assert(false);
-            float_value_as_u64 := <<cast(*u64)*float_value_as_f64;
+            float_value_as_u64 := (cast(*u64)*float_value_as_f64).*;
             format := FormatFloat.{ trailing_width = 15 };
             format.value.type = info;
             format.value.value_pointer = value_pointer;
@@ -603,12 +600,12 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
 
             case .BOOL;
-            if <<(cast(*bool)value_pointer) then append(builder, "true"); else append(builder, "false");
+            if (cast(*bool)value_pointer).* then append(builder, "true"); else append(builder, "false");
 
 
 
             case .STRING;
-            the_string := <<(cast(*string)value_pointer);
+            the_string := (cast(*string)value_pointer).*;
             append(builder, "\"");
             append(builder, the_string);
             append(builder, "\"");
@@ -617,7 +614,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
             case .POINTER;
             pointer_info := cast(*Type_Info_Pointer)info;
-            the_pointer := <<(cast(**void)value_pointer);
+            the_pointer := (cast(**void)value_pointer).*;
             successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth);
             if !successful_pointer_unparse then return false, pointer_unparse_error;
 
@@ -706,10 +703,10 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
             case .ENUM;
             enum_info := cast(*Type_Info_Enum)info;
             enum_value : s64;
-            if      info.runtime_size == 1 { enum_value = cast(s64)<<(cast(*s8) value_pointer); }
-            else if info.runtime_size == 2 { enum_value = cast(s64)<<(cast(*s16)value_pointer); }
-            else if info.runtime_size == 4 { enum_value = cast(s64)<<(cast(*s32)value_pointer); }
-            else if info.runtime_size == 8 { enum_value = cast(s64)<<(cast(*s64)value_pointer); }
+            if      info.runtime_size == 1 { enum_value = cast(s64)(cast(*s8) value_pointer).*; }
+            else if info.runtime_size == 2 { enum_value = cast(s64)(cast(*s16)value_pointer).*; }
+            else if info.runtime_size == 4 { enum_value = cast(s64)(cast(*s32)value_pointer).*; }
+            else if info.runtime_size == 8 { enum_value = cast(s64)(cast(*s64)value_pointer).*; }
             else assert(false);
             if (enum_info.enum_type_flags & .FLAGS)
             {
@@ -773,12 +770,15 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
         }
 
         return true, "";
-
-        append_indentation :: (builder : *String_Builder, depth : int)
-        {
-            for 0..depth-1 append(builder, "    ");
-        }
     }
+
+    info := type_info(Data_Type);
+    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
+
+    successful_unparse, unparse_error := unparse_one(builder, info, data, depth = 0, brackets_on_struct = false);
+    if !successful_unparse then return false, unparse_error;
+
+    return true, "";
 }
 
 
