@@ -255,6 +255,29 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
             result_token.text.count -= 2;
             result_token.text.data  += 1;
         }
+        else if get(tokenizer) == #char "@"
+        {
+            advance();
+            delimiter := get(tokenizer);
+            advance();
+
+            offset := 0;
+            if      get(tokenizer) == #char "\n"                                  then offset = 1;
+            else if get(tokenizer) == #char "\r" && peek(tokenizer) == #char "\n" then offset = 2; // Windows, why you playin'
+            for 0..offset-1 advance();
+
+            while true
+            {
+                if      get(tokenizer) == #char "\\" then advance();
+                else if get(tokenizer) == delimiter  then break;
+                advance();
+            }
+            advance();
+
+            found_token(String);
+            result_token.text.count -= (3 + offset);
+            result_token.text.data  += (2 + offset);
+        }
         else if is_operator(tokenizer, "(")  { advance(); found_token(Open_Parentheses);  }
         else if is_operator(tokenizer, ")")  { advance(); found_token(Close_Parentheses); }
         else if is_operator(tokenizer, "{")  { advance(); found_token(Open_Braces);       }
@@ -265,7 +288,6 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
         else if is_operator(tokenizer, ">")  { advance(); found_token(More_Than);         }
         else if is_operator(tokenizer, "?")  { advance(); found_token(Interrogation);     }
         else if is_operator(tokenizer, "!")  { advance(); found_token(Exclamation);       }
-        else if is_operator(tokenizer, "@")  { advance(); found_token(At_Sign);           }
         else if is_operator(tokenizer, "=")  { advance(); found_token(Equals);            }
         else if is_operator(tokenizer, "+")  { advance(); found_token(Plus);              }
         else if is_operator(tokenizer, "-")  { advance(); found_token(Minus);             }
