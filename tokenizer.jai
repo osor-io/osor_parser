@@ -38,7 +38,6 @@ Token :: struct
         Semicolon;
         Colon;
         Hash;
-        Apostrophe;
         Ampersand;
 
         End;
@@ -127,7 +126,7 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
 
     advance :: () #expand
     {
-        if tokenizer.current.count <= 0 then `return .{}, error("Unexpected end of text in line %, maybe a block like a string or comment aren't closed?", tokenizer.current_line);
+        if tokenizer.current.count <= 0 then `return .{}, error(tokenizer, "Unexpected end of text in line %, maybe a block like a string or comment aren't closed?", tokenizer.current_line);
         advancing_line := get(tokenizer) == #char "\n";
         tokenizer.current.data  += 1;
         tokenizer.current.count -= 1;
@@ -160,9 +159,11 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
         return get(tokenizer) == operator_string.data.*;
     }
     
-    error :: (format : string, arguments : .. Any) -> string
+    error :: (tokenizer : *Tokenizer, format : string, arguments : .. Any) -> string
     {
-        return tprint(format, ..arguments);
+        user_message := tprint(format, ..arguments);
+        complete_message := tprint("%\n    line %: %\n", user_message, tokenizer.current_line.number, tokenizer.current_line.text);
+        return complete_message;
     } @PrintLike
 
     result_token : Token;
@@ -241,6 +242,15 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
             while is_digit_or_underscore(get(tokenizer)) advance();
             if has_floating_point then found_token(Float); else found_token(Integer);
         }
+        else if get(tokenizer) == #char "'"
+        {
+            advance();
+            bytes_for_unicode_character := 1 + trailingBytesForUTF8[get(tokenizer)];
+            for 0..bytes_for_unicode_character-1 advance();
+            if get(tokenizer) != #char "'" then return .{}, error(tokenizer, "Malformed single unicode character");
+            advance();
+            found_token(Integer);
+        }
         else if get(tokenizer) == #char "\""
         {
             advance();
@@ -278,13 +288,12 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
         else if is_operator(tokenizer, ";")  { advance(); found_token(Semicolon);         }
         else if is_operator(tokenizer, ":")  { advance(); found_token(Colon);             }
         else if is_operator(tokenizer, "#")  { advance(); found_token(Hash);              }
-        else if is_operator(tokenizer, "'")  { advance(); found_token(Apostrophe);        }
         else if is_operator(tokenizer, "&")  { advance(); found_token(Ampersand);         }
         else
         {
             current_character := tokenizer.current;
             current_character.count = 1;
-            return .{}, error("Don't know what the hell this means: (%) in %", current_character, tokenizer.current_line.text);
+            return .{}, error(tokenizer, "Don't know what the hell this means: %", current_character);
         }
 
         if result_token.type != .Invalid then return result_token, "";
@@ -320,6 +329,19 @@ token_to_integer :: (token : Token) -> value : u64, success : bool, error : stri
     if token.type != .Integer then return 0, false, "The token to parse wasn't an integer";
 
     the_string := token.text;
+
+    if begins_with(the_string, "'") && ends_with(the_string, "'")
+    {
+        unicode_string := the_string;
+        unicode_string.count -= 2;
+        unicode_string.data  += 1;
+        utf32_integer, bytes_used, unicode_result := character_utf8_to_utf32(unicode_string.data, unicode_string.count);
+        if bytes_used != unicode_string.count || unicode_result != .CONVERSION_OK
+        {
+            return 0, false, "Conversion between unicode literal to integer failed";
+        }
+        return utf32_integer, true, "";
+    }
 
     base : u64 = 10;
     if begins_with(the_string, "0b")

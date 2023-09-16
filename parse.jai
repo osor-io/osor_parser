@@ -10,8 +10,9 @@
 // - Parsing pointers, allocating the needed type and filling it. There's a custom pointer_allocator
 //   that can be provided, so the memory for a given type is provided by the user.
 // - Parsing nested structs and handling 'using' correctly. This means that at the base struct level
-//   you can put the name of a member living on a child struct that is marked with 'using'
-// - Option to specify how many elements are on an array to only allocate once 'array = 3 [1,2,3]'
+//   you can put the name of a member living on a child struct that is marked with 'using'.
+// - Option to specify how many elements are on an array to only allocate once 'array = 3 [1,2,3]'.
+// - Option to provide custom parsing procedures.
 //
 //
 // Considerations:
@@ -23,7 +24,7 @@
 //   members that it already allocated. So in an error case you might be leaking memory as well. 
 //
 // - During the tokenization process this will allocate memory for the tokens that is freed when returning
-//   from the procedure always thanks to defer. So that will never leak, but is a consideration to have, 
+//   from the procedure always thanks to defer. That will never leak, but is a consideration to have, 
 //   especially if you're providing a custom allocator in the context.
 //
 //
@@ -38,34 +39,98 @@
 
 
 
+//
+// @@TODO: Ideally we'd like to pass the default custom parsers/unparsers from the user via
+// module parameters as follows: 
+//
+//     #module_parameters(CUSTOM_PARSERS : []Custom_Parser = .[], CUSTOM_UNPARSERS : []Custom_Unparser = .[]);
+//
+// However this is triggering an internal compiler error at the time of writing. Once that's fixed
+// we sould be able to just enable the line above. For the time being, by default there's no module-wide
+// custom parsers/unparsers.  
+//
+// If you do want to use them already, you can set the #if below to false and provide them via
+// #poke_name to the procedure as in:
+//
+//     CUSTOM_PARSERS   : []Custom_Parser   = .[/*your custom parsing procedures*/];
+//     CUSTOM_UNPARSERS : []Custom_Unparser = .[/*your custom unparsing procedures*/];
+//     #poke_name OSOR_PARSER CUSTOM_PARSERS;
+//     #poke_name OSOR_PARSER CUSTOM_UNPARSERS;
+//
+#if true // If you want to use these, set this to false and use #poke_name to set your own as per the comment above.
+{
+    CUSTOM_PARSERS   : []Custom_Parser   = .[];
+    CUSTOM_UNPARSERS : []Custom_Unparser = .[];
+}
+
+
+
 Parse_Settings :: struct
 {
     copy_strings := false; 
-    // If false, the strings on the result will just be slice of the provided input string
+    // If false, the strings on the result will just be slice of the provided input string,
+    // otherwise they'll be allocated through the set of allocators in here. Note that the
+    // size and old_size given to the allocator procedure is the length in bytes of the string,
+    // even if it's sending the type_info of the string itself (so you know it's a string in case
+    // you want to allocate those differently than random byte arrays).
 
-    allow_allocations := false;
-    // If you disallow them there's things that can't be done such as arrays, 
-    // pointers (if you don't provide a pointer_allocator) or copy strings
-
-    pointer_allocator : (info : *Type_Info, allocator_data : *void) -> *void;
-    pointer_allocator_data : *void;
-    // This allows you to provide memory for a pointer of the given type
-
+    allocators : []Parser_Allocator;
+    // This is an array of allocators that will be called whenever dynamic memory is needed. It 
+    // will do it in-order, and each can choose to return false to not handle the allocation.
     //
-    // @@NOTE: Arrays are allocated with alloc/realloc which will use whatever allocator is in the context.
+    // The idea is that you might not want unlimited dynamic allocations when parsing, but you might
+    // have some data types that want to go to a separate buffer, or use a separate pool or something, in
+    // these cases you can set up an allocator and only handle allocations for a specific type (since the
+    // allocator procedure for these receives a *Type_Info).
     //
+    // Then if you DO want general dynamic allocation, you can hook up the context allocator or the
+    // basic allocator at the end of the array. You can see how CONTEXT_PARSER_ALLOCATOR is used to
+    // achieve this. This way, all the allocations that are not for specific types will fall naturally
+    // to the generic allocator and be handled in a more traditional way.
+    //
+
+    extra_custom_parsers : []Custom_Parser;
+    // If you want a particular call to use further custom parsing procedures in addition
+    // to the ones in the module parameters, you can specify them here.
 }
-PARSE_SETTINGS_WITH_ALLOCATIONS :: Parse_Settings.
+
+Parser_Allocator_Procedure :: #type (info : *Type_Info, count : s64, old_count : s64, old_memory : *void, allocator_data : *void) -> handled : bool, *void;
+Parser_Allocator :: struct
 {
-    copy_strings = true,
-    allow_allocations = true,
+    procedure : Parser_Allocator_Procedure;
+    data : *void;
+}
+CONTEXT_PARSER_ALLOCATOR :: Parser_Allocator.
+{
+    procedure = (info : *Type_Info, count : s64, old_count : s64, old_memory : *void, allocator_data : *void) -> bool, *void
+    {
+        size := info.runtime_size * count;
+        if old_count > 0 || old_memory != null
+        {
+            old_size := info.runtime_size * old_count;
+            return true, realloc(old_memory, size, old_size, context.allocator);
+        }
+        return true, alloc(size, context.allocator);
+    },
+    data = null,
 };
 
+Custom_Parser :: #type (token : *Token, struct_info : *Type_Info_Struct, value_pointer : *void) -> parsed : bool, next_token : *Token, error : string;
 
-
-parse :: (the_string : string, result : *$Result_Type, settings := Parse_Settings.{}, $custom_struct_parsing := () -> bool #expand { return false; }) -> success : bool, error : string
+PARSE_SETTINGS_WITH_GENERIC_ALLOCATIONS :: Parse_Settings.
 {
-    parse_one :: (token : *Token, info : *Type_Info, value_pointer : *void, settings : Parse_Settings, is_first_call := false) -> *Token #must, success : bool #must, error : string #must
+    copy_strings = true,
+    allocators = .[CONTEXT_PARSER_ALLOCATOR],
+};
+
+parse :: (the_string : string, result : *$Result_Type, settings := Parse_Settings.{}) -> success : bool, error : string
+{
+    success, error := parse(the_string, cast(*void)result, type_info(Result_Type), settings);
+    return success, error;
+}
+parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Struct, settings := Parse_Settings.{}) -> success : bool, error : string
+{
+    parse_one :: (token : *Token, info : *Type_Info, value_pointer : *void, settings : Parse_Settings, custom_parsers : []Custom_Parser, is_first_call := false) -> *Token #must, success : bool #must, error : string #must
     {
         error :: (token : *Token, format : string, arguments : .. Any) -> string
         {
@@ -73,6 +138,23 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             complete_message := tprint("%\n    line %: %\n", user_message, token.line.number, token.line.text);
             return complete_message;
         } @PrintLike
+
+        integer_fits_in_type :: (unsigned_value : u64, negated : bool, integer_info : *Type_Info_Integer) -> bool
+        {
+            if negated && !integer_info.signed then return false;
+            max_unsigned_value : u64 = 0;
+            for 0..integer_info.runtime_size-1 
+            {
+                max_unsigned_value <<= 8;
+                max_unsigned_value |= 0xFF;
+            }
+            if integer_info.signed 
+            {
+                max_unsigned_value >>= 1;
+                if negated then max_unsigned_value += 1;
+            }
+            return unsigned_value < max_unsigned_value;
+        }
 
         if #complete info.type == 
         {
@@ -93,24 +175,25 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 return null, false, error(token, "Expected Integer but found %", token.type);
             }
             value, integer_parse_success, integer_parse_error := token_to_integer(token);
-            if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
+            if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %", integer_parse_error);
+            if !integer_fits_in_type(value, negate, info_int) return null, false, error(token, "Integer doesn't fit in this type");
             if info_int.signed  
             {
                 signed_value := cast(s64)value;
                 if negate then signed_value = -signed_value;
-                if      info.runtime_size == 1 { v := cast,trunc(s8)  signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 2 { v := cast,trunc(s16) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 4 { v := cast,trunc(s32) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 8 { v := cast,trunc(s64) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                if      info.runtime_size == 1 { v := cast(s8)  signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 2 { v := cast(s16) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 4 { v := cast(s32) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 8 { v := cast(s64) signed_value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
             else
             {
                 if negate then return null, false, error(token, "Setting negative value (%) on unsigned member", value);
-                if      info.runtime_size == 1 { v := cast,trunc(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 2 { v := cast,trunc(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 4 { v := cast,trunc(u32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 8 { v := cast,trunc(u64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                if      info.runtime_size == 1 { v := cast(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 2 { v := cast(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 4 { v := cast(u32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 8 { v := cast(u64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
             token += 1;
@@ -204,11 +287,15 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             }
             if settings.copy_strings
             {
-                if !settings.allow_allocations
+                alloc_success := false;
+                alloc_success, the_string.data = parser_alloc(*settings, type_info(type_of(the_string.data.*)), token.text.count + 1);
+                if !alloc_success
                 {
-                    return null, false, error(token, "Requested to copy a string but settings dissallow allocations");
+                    return null, false, error(token, "Requested to copy a string but we couldn't allocate memory for the copy");
                 }
-                the_string = copy_string(token.text);
+                the_string.count = token.text.count;
+                memcpy(the_string.data, token.text.data, token.text.count);
+                (the_string.data + the_string.count).* = #char "0";
             }
             else
                 the_string = token.text;
@@ -236,23 +323,30 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                     }
                     value |= enum_info.values[enum_index];
                 }
-                else if token.type == .String
-                {
-                    if token.text.count != 1
-                    {
-                        return null, false, error(token, "Enum value passed as string % must be a single character", token.text);
-                    }
-                    value |= xx token.text[0];
-                }
-                else if token.type == .Integer
-                {
-                    int_value, integer_parse_success, integer_parse_error := token_to_integer(token);
-                    if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
-                    value |= xx int_value;
-                }
                 else
                 {
-                    return null, false, error(token, "Expected Identifier but found %", token.type);
+                    negate := false;
+                    if token.type == .Plus  
+                    {
+                        token += 1;
+                    }
+                    else if token.type == .Minus 
+                    {
+                        negate = true;
+                        token += 1;
+                    }
+                    if token.type == .Integer
+                    {
+                        int_value, integer_parse_success, integer_parse_error := token_to_integer(token);
+                        if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
+                        if !integer_fits_in_type(int_value, negate, enum_info.internal_type) return null, false, error(token, "Integer doesn't fit in the internal type of this enum");
+                        if negate then value |= xx -(cast(s64)int_value);
+                                  else value |= xx int_value;
+                    }
+                    else
+                    {
+                        return null, false, error(token, "Expected Identifier but found %", token.type);
+                    }
                 }
                 token += 1;
                 if (enum_info.enum_type_flags & .FLAGS) && token.type == .Vertical_Slash
@@ -267,10 +361,10 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             signed := enum_info.internal_type.signed;
             if signed
             {
-                if      info.runtime_size == 1 { v := cast,trunc(s8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 2 { v := cast,trunc(s16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 4 { v := cast,trunc(s32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 8 { v := cast,trunc(s64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                if      info.runtime_size == 1 { v := cast(s8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 2 { v := cast(s16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 4 { v := cast(s32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 8 { v := cast(s64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
             else
@@ -279,34 +373,32 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 {
                     return null, false, error(first_enum_token, "Setting negative value (%) on unsigned member", value);
                 }
-                if      info.runtime_size == 1 { v := cast,trunc(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 2 { v := cast,trunc(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 4 { v := cast,trunc(u32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
-                else if info.runtime_size == 8 { v := cast,trunc(u64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                if      info.runtime_size == 1 { v := cast(u8)  value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 2 { v := cast(u16) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 4 { v := cast(u32) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
+                else if info.runtime_size == 8 { v := cast(u64) value; memcpy(value_pointer, *v, size_of(type_of(v))); }
                 else assert(false);
             }
 
 
 
             case .POINTER;
-            pointer_info := cast(*Type_Info_Pointer) info;
-            pointer_to_fill : *void;
-            if settings.pointer_allocator
-                pointer_to_fill = settings.pointer_allocator(pointer_info.pointer_to, settings.pointer_allocator_data);
-            if pointer_to_fill == null && settings.allow_allocations
-                pointer_to_fill = alloc(pointer_info.pointer_to.runtime_size);
-            if pointer_to_fill == null
-                return null, false, error(token, "Found a pointer type to fill but we couldn't allocate memory for it");
-            assert(pointer_to_fill != null);
-            if pointer_info.pointer_to.type == .STRUCT
+            pointer_info := cast(*Type_Info_Pointer)info;
+            alloc_success, pointer_to_fill := parser_alloc(*settings, pointer_info.pointer_to, 1);
+            if !alloc_success
             {
-                struct_info := cast(*Type_Info_Struct) pointer_info.pointer_to;
-                if struct_info.initializer
+                return null, false, error(token, "Found a pointer type to fill but we couldn't allocate memory for it");
+            }
+            {
+                struct_info := cast(*Type_Info_Struct)pointer_info.pointer_to;
+                if pointer_info.pointer_to.type == .STRUCT && struct_info.initializer
                     struct_info.initializer(pointer_to_fill);
+                else
+                    memset(pointer_to_fill, 0, pointer_info.pointer_to.runtime_size);
             }
             successful_parse : bool;
             pointer_parse_error : string;
-            token, successful_parse, pointer_parse_error = parse_one(token, pointer_info.pointer_to, pointer_to_fill, settings);
+            token, successful_parse, pointer_parse_error = parse_one(token, pointer_info.pointer_to, pointer_to_fill, settings, custom_parsers);
             if !successful_parse then return token, false, pointer_parse_error;
             assert(info.runtime_size == size_of(type_of(pointer_to_fill)));
             memcpy(value_pointer, *pointer_to_fill, size_of(type_of(pointer_to_fill)));
@@ -315,8 +407,6 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
             case .ARRAY;
             array_info := cast(*Type_Info_Array) info;
-            array_type := array_info.element_type;
-            is_struct := array_type.type == .STRUCT;
 
             indicated_size_on_file := -1;
             if token.type == .Integer
@@ -335,14 +425,14 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             }
             token += 1;
 
-            static_size : *int;
+            static_size := -1;
             if #complete array_info.array_type ==
             {
                 case .FIXED;
-                static_size = *array_info.array_count;
-                if indicated_size_on_file != -1 && static_size.* != indicated_size_on_file
+                static_size = array_info.array_count;
+                if indicated_size_on_file != -1 && static_size != indicated_size_on_file
                 {
-                    return null, false, error(token, "Indicated size on file (%) is different than the size of the fixed array (%)", indicated_size_on_file, static_size.*);
+                    return null, false, error(token, "Indicated size on file (%) is different than the size of the fixed array (%)", indicated_size_on_file, static_size);
                 }
 
                 case .VIEW; #through;
@@ -350,29 +440,29 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                 assert(array_info.array_count == -1, "Unexpected array count");
             }
 
-            if static_size == null && !settings.allow_allocations
-            {
-                return null, false, error(token, "Found dynamic array but allocations are disallowed by parse settings");
-            }
-
             array_data : Resizable_Array; 
-            array_data.allocator = context.allocator;
-            if static_size
+            if static_size != -1
             {
                 array_data.data = value_pointer;
-                array_data.allocated = static_size.*;
+                array_data.allocated = static_size;
             }
             else if indicated_size_on_file != -1
             {
+                alloc_success := false;
+                alloc_success, array_data.data = parser_alloc(*settings, array_info.element_type, indicated_size_on_file);
+                if !alloc_success
+                {
+                    return null, false, error(token, "Dynamic array wants to allocate % elements but we weren't able to", indicated_size_on_file);
+                }
                 array_data.allocated = indicated_size_on_file;
-                assert(settings.allow_allocations);
-                array_data.data = alloc(array_data.allocated * array_type.runtime_size, array_data.allocator);
-                struct_info := cast(*Type_Info_Struct) array_type;
-                if is_struct && struct_info.initializer
-                    for index : 0..array_data.allocated-1
-                        struct_info.initializer(array_data.data + (index * array_type.runtime_size));
-                else
-                    memset(array_data.data, 0, array_data.allocated * array_type.runtime_size);
+                {
+                    struct_info := cast(*Type_Info_Struct)array_info.element_type;
+                    if array_info.element_type.type == .STRUCT && struct_info.initializer
+                        for index : 0..array_data.allocated-1
+                            struct_info.initializer(array_data.data + (index * array_info.element_type.runtime_size));
+                    else
+                        memset(array_data.data, 0, array_data.allocated * array_info.element_type.runtime_size);
+                }
             }
             while true
             {
@@ -380,9 +470,9 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
                 if array_data.count >= array_data.allocated
                 {
-                    if static_size
+                    if static_size != -1
                     {
-                        return null, false, error(token, "Trying to add too many elements to static array of size %\n", static_size.*);
+                        return null, false, error(token, "Trying to add too many elements to static array of size %\n", static_size);
                     }
                     else if indicated_size_on_file != -1
                     {
@@ -390,24 +480,28 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                     }
 
                     old_allocated := array_data.allocated;
-                    array_data.allocated = max(8, array_data.allocated * 2);
-                    assert(settings.allow_allocations);
-                    array_data.data = realloc(array_data.data, 
-                                              array_data.allocated * array_type.runtime_size, 
-                                              old_allocated * array_type.runtime_size,
-                                              array_data.allocator); 
-                    struct_info := cast(*Type_Info_Struct) array_type;
-                    if is_struct && struct_info.initializer
-                        for index : old_allocated..array_data.allocated-1
-                            struct_info.initializer(array_data.data + (index * array_type.runtime_size));
-                    else
-                        memset(array_data.data + (old_allocated * array_type.runtime_size), 0, (array_data.allocated - old_allocated) * array_type.runtime_size);
+                    new_allocated := max(8, old_allocated * 2);
+                    realloc_success := false;
+                    realloc_success, array_data.data = parser_realloc(*settings, array_info.element_type, new_allocated, old_allocated, array_data.data);
+                    if !realloc_success
+                    {
+                        return null, false, error(token, "Dynamic array wants to grow from % to % elements but we weren't able to reallocate them", old_allocated, new_allocated);
+                    }
+                    array_data.allocated = new_allocated;
+                    {
+                        struct_info := cast(*Type_Info_Struct)array_info.element_type;
+                        if array_info.element_type.type == .STRUCT && struct_info.initializer
+                            for index : old_allocated..array_data.allocated-1
+                                struct_info.initializer(array_data.data + (index * array_info.element_type.runtime_size));
+                        else
+                            memset(array_data.data + (old_allocated * array_info.element_type.runtime_size), 0, (array_data.allocated - old_allocated) * array_info.element_type.runtime_size);
+                    }
                 }
 
-                pointer_to_current := array_data.data + (array_data.count * array_type.runtime_size);
+                pointer_to_current := array_data.data + (array_data.count * array_info.element_type.runtime_size);
                 successful_parse : bool;
                 array_element_parse_error : string;
-                token, successful_parse, array_element_parse_error = parse_one(token, array_type, pointer_to_current, settings);
+                token, successful_parse, array_element_parse_error = parse_one(token, array_info.element_type, pointer_to_current, settings, custom_parsers);
                 if !successful_parse then return token, false, array_element_parse_error;
                 array_data.count += 1;
                 if token.type == .Comma  token += 1;
@@ -419,12 +513,12 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             if #complete array_info.array_type ==
             {
                 case .FIXED;
-                assert(static_size != null);
-                if array_data.count != static_size.*
+                assert(static_size >= 0);
+                if array_data.count != static_size
                 {
-                    return null, false, error(token, "Not enough elements provided (%) for array of static size %", array_data.count, static_size.*);
+                    return null, false, error(token, "Not enough elements provided (%) for array of static size %", array_data.count, static_size);
                 }
-                size := array_data.count * array_type.runtime_size;
+                size := array_data.count * array_info.element_type.runtime_size;
                 assert(info.runtime_size == size);
                 memcpy(value_pointer, array_data.data, size);
 
@@ -445,7 +539,21 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
             case .STRUCT;
             struct_info := cast(*Type_Info_Struct) info;
-            handled_by_custom_parsing := custom_struct_parsing();
+
+            handled_by_custom_parsing := false;
+            for custom_parsers
+            {
+                handled_by_custom_parsing=, next_token, error_message := it(token, struct_info, value_pointer);
+                if error_message
+                {
+                    return null, false, error(token, "Error during custom parsing: %", error_message);
+                }
+                if handled_by_custom_parsing
+                {
+                    token = next_token;
+                    break;
+                }
+            }
             if !handled_by_custom_parsing
             {
                 if !is_first_call 
@@ -512,7 +620,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
                     member_pointer += offset_in_bytes;
                     successful_parse : bool;
                     member_parse_error : string;
-                    token, successful_parse, member_parse_error = parse_one(token, contained_type, member_pointer, settings);
+                    token, successful_parse, member_parse_error = parse_one(token, contained_type, member_pointer, settings, custom_parsers);
                     if !successful_parse then return token, false, member_parse_error;
                 }
             }
@@ -523,7 +631,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
             variant_info := cast(*Type_Info_Variant)info;
             successful_parse : bool;
             variant_parse_error : string;
-            token, successful_parse, variant_parse_error = parse_one(token, variant_info.variant_of, value_pointer, settings, is_first_call);
+            token, successful_parse, variant_parse_error = parse_one(token, variant_info.variant_of, value_pointer, settings, custom_parsers, is_first_call);
             if !successful_parse then return token, false, variant_parse_error;
 
 
@@ -546,15 +654,16 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
     if !tokenize_success then return false, tokenize_error;
     defer array_reset(*tokens);
 
-    info := type_info(Result_Type);
-    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
+    local_custom_parsers := NewArray(CUSTOM_PARSERS.count + settings.extra_custom_parsers.count, Custom_Parser, allocator = temporary_allocator);
+    for CUSTOM_PARSERS local_custom_parsers[it_index] = it; 
+    for settings.extra_custom_parsers local_custom_parsers[CUSTOM_PARSERS.count + it_index] = it;
 
     token := tokens.data;
     while token && token.type != .End
     {
         successful_parse : bool;
         parse_error : string;
-        token, successful_parse, parse_error = parse_one(token, info, result, settings, is_first_call = true);
+        token, successful_parse, parse_error = parse_one(token, result_type_info, result, settings, local_custom_parsers, is_first_call = true);
         if !successful_parse then return false, parse_error;
     }
 
@@ -563,9 +672,23 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 
 
 
-unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unparsing := () -> bool #expand { return false; }) -> success : bool, error : string
+Unparse_Settings :: struct
 {
-    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, brackets_on_struct := true) -> success : bool #must, error : string #must
+    extra_custom_unparsers : []Custom_Unparser;
+    // If you want a particular call to use further custom unparsing procedures in addition
+    // to the ones in the module parameters, you can specify them here.
+}
+
+Custom_Unparser :: #type (builder : *String_Builder, struct_info : *Type_Info_Struct, value_pointer : *void) -> unparsed : bool, error : string;
+
+unparse :: (builder : *String_Builder, input : *$Input_Type, settings := Unparse_Settings.{}) -> success : bool, error : string
+{
+    success, error := unparse(builder, input, type_info(Input_Type), settings);
+    return success, error;
+}
+unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_Info_Struct, settings := Unparse_Settings.{}) -> success : bool, error : string
+{
+    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, custom_unparsers : []Custom_Unparser, brackets_on_struct := true) -> success : bool #must, error : string #must
     {
         append_indentation :: (builder : *String_Builder, depth : int)
         {
@@ -615,7 +738,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
             case .POINTER;
             pointer_info := cast(*Type_Info_Pointer)info;
             the_pointer := (cast(**void)value_pointer).*;
-            successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth);
+            successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth, custom_unparsers);
             if !successful_pointer_unparse then return false, pointer_unparse_error;
 
 
@@ -624,7 +747,14 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
             struct_info := cast(*Type_Info_Struct)info;
             default_value := talloc(struct_info.runtime_size);
             if struct_info.initializer then struct_info.initializer(default_value); else memset(default_value, 0, struct_info.runtime_size);
-            handled_by_custom_parsing := custom_struct_unparsing();
+
+            handled_by_custom_parsing := false;
+            for custom_unparsers
+            {
+                handled_by_custom_parsing=, error_message := it(builder, struct_info, value_pointer);
+                if error_message then return false, tprint("Error during custom unparsing: %", error_message); 
+                if handled_by_custom_parsing then break;
+            }
             if !handled_by_custom_parsing
             {
                 added_any_members := false;
@@ -648,7 +778,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
                                 }
                                 if (member.flags & .USING)
                                 {
-                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, brackets_on_struct = false);
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, custom_unparsers, brackets_on_struct = false);
                                     if !successful_member_unparse then return false, member_unparse_error;
                                 }
                                 else
@@ -656,7 +786,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
                                     append_indentation(builder, depth);
                                     append(builder, member.name);
                                     append(builder, " = ");
-                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1);
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1, custom_unparsers);
                                     if !successful_member_unparse then return false, member_unparse_error;
                                     append(builder, "\n");
                                 }
@@ -691,7 +821,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
             {
                 if it == 0 || (max(it-1, 0) % line_break_every_n_elements) == (line_break_every_n_elements-1) then append_indentation(builder, depth);
                 array_element_value_pointer := array_view.data + (array_info.element_type.runtime_size * it);
-                successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1);
+                successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1, custom_unparsers);
                 if !successful_element_unparse then return false, element_unparse_error;
                 if it == array_view.count-1 || (it % line_break_every_n_elements) == (line_break_every_n_elements-1) then append(builder, ",\n"); else append(builder, ", ");
             }
@@ -754,7 +884,7 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
 
             case .VARIANT;
             variant_info := cast(*Type_Info_Variant)info;
-            successful_variant_unparse, variant_unparse_error := unparse_one(builder, variant_info.variant_of, value_pointer, depth);
+            successful_variant_unparse, variant_unparse_error := unparse_one(builder, variant_info.variant_of, value_pointer, depth, custom_unparsers);
             if !successful_variant_unparse then return false, variant_unparse_error;
 
 
@@ -772,13 +902,40 @@ unparse :: (builder : *String_Builder, data : *$Data_Type, $custom_struct_unpars
         return true, "";
     }
 
-    info := type_info(Data_Type);
-    if info.type != .STRUCT then return false, tprint("Expected the provided type (%) to be a struct and it was % instead", info.name, info.type);
+    local_custom_unparsers := NewArray(CUSTOM_UNPARSERS.count + settings.extra_custom_unparsers.count, Custom_Unparser, allocator = temporary_allocator);
+    for CUSTOM_UNPARSERS local_custom_unparsers[it_index] = it; 
+    for settings.extra_custom_unparsers local_custom_unparsers[CUSTOM_UNPARSERS.count + it_index] = it;
 
-    successful_unparse, unparse_error := unparse_one(builder, info, data, depth = 0, brackets_on_struct = false);
+    successful_unparse, unparse_error := unparse_one(builder, input_type_info, input, depth = 0, local_custom_unparsers, brackets_on_struct = false);
     if !successful_unparse then return false, unparse_error;
 
     return true, "";
+}
+
+
+
+#scope_file
+
+
+
+parser_alloc :: (settings : *Parse_Settings, info : *Type_Info, size : int) -> bool, *void
+{
+    for settings.allocators
+    {
+        handled, result := it.procedure(info, size, 0, null, it.data);
+        if handled then return true, result;
+    }
+    return false, null;
+}
+
+parser_realloc :: (settings : *Parse_Settings, info : *Type_Info, size : int, old_size : int, old_memory : *void) -> bool, *void
+{
+    for settings.allocators
+    {
+        handled, result := it.procedure(info, size, old_size, old_memory, it.data);
+        if handled then return true, result;
+    }
+    return false, null;
 }
 
 
