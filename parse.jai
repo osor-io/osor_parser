@@ -43,7 +43,11 @@
 // @@TODO: Ideally we'd like to pass the default custom parsers/unparsers from the user via
 // module parameters as follows: 
 //
-//     #module_parameters(CUSTOM_PARSERS : []Custom_Parser = .[], CUSTOM_UNPARSERS : []Custom_Unparser = .[]);
+//     #module_parameters(CUSTOM_PARSERS : []Custom_Parser = .[], CUSTOM_UNPARSERS : []Custom_Unparser = .[])
+//     {
+//         Custom_Parser :: #type (token : *Token, struct_info : *Type_Info_Struct, value_pointer : *void) -> parsed : bool, next_token : *Token, error : string;
+//         Custom_Unparser :: #type (builder : *String_Builder, struct_info : *Type_Info_Struct, value_pointer : *void) -> unparsed : bool, error : string;
+//     }
 //
 // However this is triggering an internal compiler error at the time of writing. Once that's fixed
 // we sould be able to just enable the line above. For the time being, by default there's no module-wide
@@ -104,13 +108,14 @@ CONTEXT_PARSER_ALLOCATOR :: Parser_Allocator.
 {
     procedure = (info : *Type_Info, count : s64, old_count : s64, old_memory : *void, allocator_data : *void) -> bool, *void
     {
+        allocator := context.allocator;
         size := info.runtime_size * count;
         if old_count > 0 || old_memory != null
         {
             old_size := info.runtime_size * old_count;
-            return true, realloc(old_memory, size, old_size, context.allocator);
+            return true, realloc(old_memory, size, old_size,, allocator);
         }
-        return true, alloc(size, context.allocator);
+        return true, alloc(size,, allocator);
     },
     data = null,
 };
@@ -654,7 +659,7 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
     if !tokenize_success then return false, tokenize_error;
     defer array_reset(*tokens);
 
-    local_custom_parsers := NewArray(CUSTOM_PARSERS.count + settings.extra_custom_parsers.count, Custom_Parser, allocator = temporary_allocator);
+    local_custom_parsers := NewArray(CUSTOM_PARSERS.count + settings.extra_custom_parsers.count, Custom_Parser,, temporary_allocator);
     for CUSTOM_PARSERS local_custom_parsers[it_index] = it; 
     for settings.extra_custom_parsers local_custom_parsers[CUSTOM_PARSERS.count + it_index] = it;
 
@@ -902,7 +907,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
         return true, "";
     }
 
-    local_custom_unparsers := NewArray(CUSTOM_UNPARSERS.count + settings.extra_custom_unparsers.count, Custom_Unparser, allocator = temporary_allocator);
+    local_custom_unparsers := NewArray(CUSTOM_UNPARSERS.count + settings.extra_custom_unparsers.count, Custom_Unparser,, temporary_allocator);
     for CUSTOM_UNPARSERS local_custom_unparsers[it_index] = it; 
     for settings.extra_custom_unparsers local_custom_unparsers[CUSTOM_UNPARSERS.count + it_index] = it;
 
