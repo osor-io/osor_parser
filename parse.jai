@@ -104,8 +104,7 @@ Parser_Allocator :: struct
     procedure : Parser_Allocator_Procedure;
     data : *void;
 }
-CONTEXT_PARSER_ALLOCATOR :: Parser_Allocator.
-{
+CONTEXT_PARSER_ALLOCATOR :: Parser_Allocator.{
     procedure = (info : *Type_Info, count : s64, old_count : s64, old_memory : *void, allocator_data : *void) -> bool, *void
     {
         allocator := context.allocator;
@@ -122,8 +121,7 @@ CONTEXT_PARSER_ALLOCATOR :: Parser_Allocator.
 
 Custom_Parser :: #type (token : *Token, struct_info : *Type_Info_Struct, value_pointer : *void) -> parsed : bool, next_token : *Token, error : string;
 
-PARSE_SETTINGS_WITH_GENERIC_ALLOCATIONS :: Parse_Settings.
-{
+PARSE_SETTINGS_WITH_GENERIC_ALLOCATIONS :: Parse_Settings.{
     copy_strings = true,
     allocators = .[CONTEXT_PARSER_ALLOCATOR],
 };
