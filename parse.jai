@@ -53,15 +53,17 @@
 // we sould be able to just enable the line above. For the time being, by default there's no module-wide
 // custom parsers/unparsers.  
 //
-// If you do want to use them already, you can set the #if below to false and provide them via
+// If you do want to use them already, you can set the EXPECT_CUSTOM_PARSERS module parameter to true and provide them via
 // #poke_name to the procedure as in:
 //
+//     using Osor_Parser :: #import "osor_parser"(EXPECT_CUSTOM_PARSERS = true);
 //     CUSTOM_PARSERS   : []Custom_Parser   = .[/*your custom parsing procedures*/];
 //     CUSTOM_UNPARSERS : []Custom_Unparser = .[/*your custom unparsing procedures*/];
-//     #poke_name OSOR_PARSER CUSTOM_PARSERS;
-//     #poke_name OSOR_PARSER CUSTOM_UNPARSERS;
+//     #poke_name Osor_Parser CUSTOM_PARSERS;
+//     #poke_name Osor_Parser CUSTOM_UNPARSERS;
 //
-#if true // If you want to use these, set this to false and use #poke_name to set your own as per the comment above.
+#module_parameters(EXPECT_CUSTOM_PARSERS := false);
+#if !EXPECT_CUSTOM_PARSERS
 {
     CUSTOM_PARSERS   : []Custom_Parser   = .[];
     CUSTOM_UNPARSERS : []Custom_Unparser = .[];
