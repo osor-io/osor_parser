@@ -206,7 +206,7 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
 
 
             case .FLOAT;
-            value_f64 : float64;
+            value : float64;
             has_value := false;
             if token.type == .Plus || token.type == .Minus || token.type == .Float || token.type == .Integer
             {
@@ -221,7 +221,7 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
                     parsed_value, success, remainder := string_to_float64(token.text);
                     if !success             then return null, false, error(token, "Couldn't parse float from this string");
                     if remainder.count != 0 then return null, false, error(token, "Didn't use the full string when parsing this float, results will be incorrect");
-                    value_f64 = ifx negate then -parsed_value else parsed_value;
+                    value = ifx negate then -parsed_value else parsed_value;
                     has_value = true;
                     token += 1;
                 }
@@ -230,35 +230,15 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
                     return null, false, error(token, "Expected Integer or Float but found %", token.type);
                 }
             }
-            if token.type == .Hash
+            else if token.type == .Hash
             {
                 token += 1;
                 if token.type == .Integer
                 {
-                    value_u64, integer_parse_success, integer_parse_error := token_to_integer(token);
+                    parsed_value, integer_parse_success, integer_parse_error := token_to_integer(token);
                     if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %", integer_parse_error);
-                    value_u64_as_f64 := (cast(*float64)(*value_u64)).*;
-                    if has_value
-                    {
-                        diff := value_f64 - value_u64_as_f64;
-                        if diff < 0 then diff = -diff;
-                        value_f64_positive := ifx value_f64 < 0 then -value_f64 else value_f64;
-                        THRESHOLD_BASED_ON_F32_PRECISSION :: 0.000001;
-                        if (diff / value_f64_positive) > THRESHOLD_BASED_ON_F32_PRECISSION 
-                        {
-                            return null, false, error(token, "The floating point value embedded as bytes (after #) differs too much from the actual number written (difference was %), if you edited the file you should delete the # and the integer after", diff);
-                        }
-                        else
-                        {
-                            value_f64 = value_u64_as_f64;
-                            assert(has_value);
-                        }
-                    }
-                    else
-                    {
-                        value_f64 = value_u64_as_f64;
-                        has_value = true;
-                    }
+                    value = (cast(*float64)(*parsed_value)).*;
+                    has_value = true;
                     token += 1;
                 }
                 else
@@ -266,18 +246,22 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
                     return null, false, error(token, "Expected Integer as the int representation of a float (after a #) but found %", token.type);
                 }
             }
+            else
+            {
+                return null, false, error(token, "Expected the a float number, either a float literal or a binary one starting with #, but got % instead", token.type);
+            }
             if !has_value
             {
                 return null, false, error(token, "Attempting to parse a float but we couldn't find any values here");
             }
             if info.runtime_size == 8
             {
-                assert(info.runtime_size == size_of(type_of(value_f64)));
-                memcpy(value_pointer, *value_f64, size_of(type_of(value_f64)));
+                assert(info.runtime_size == size_of(type_of(value)));
+                memcpy(value_pointer, *value, size_of(type_of(value)));
             }
             else if info.runtime_size == 4
             {
-                value_32 := cast(float32) value_f64;
+                value_32 := cast(float32) value;
                 assert(info.runtime_size == size_of(type_of(value_32)));
                 memcpy(value_pointer, *value_32, size_of(type_of(value_32)));
             }
@@ -703,10 +687,10 @@ Unparse_Settings :: struct
 
     float_output_mode : enum
     { 
-        FLOAT_ONLY;       // 1.0
-        FLOAT_AND_BINARY; // 1.0 #0x3ff0000000000000
-        BINARY_ONLY;      // #0x3ff0000000000000
-    } = .FLOAT_AND_BINARY;
+        FLOAT_ONLY;          // 1.0
+        BINARY_ONLY;         // #0x3ff0000000000000
+        BINARY_WITH_COMMENT; // #0x3ff0000000000000 /*+1.000000*/
+    } = .FLOAT_ONLY;
     // This controls the different ways to output floating point numbers. With a balance
     // of readability, modifiability, precission and speed or parsing.
 }
@@ -739,40 +723,28 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
 
             case .FLOAT;
             float_value_as_f64 : float64;
-            if      info.runtime_size == 4 { float_value_as_f64 = cast(float64)(cast(*float32)value_pointer).*; }
-            else if info.runtime_size == 8 { float_value_as_f64 =              (cast(*float64)value_pointer).*; }
+            trailing_width := 6;
+            if      info.runtime_size == 4 { trailing_width = 6;  float_value_as_f64 = cast(float64)(cast(*float32)value_pointer).*; }
+            else if info.runtime_size == 8 { trailing_width = 12; float_value_as_f64 =              (cast(*float64)value_pointer).*; }
             else assert(false);
             float_value_as_u64 := (cast(*u64)*float_value_as_f64).*;
-            format := FormatFloat.{ trailing_width = 15 };
-            format.value.type = info;
-            format.value.value_pointer = value_pointer;
-            //
-            // @@TODO: Would like to do string<->float conversions with code
-            // in this module so we can make both paths aware of each other and
-            // minimize precission issues with parsing and unparsing the same values. 
-            //
-            // Currently we rely on jai's string_to_float64 and whatever they decide to use
-            // for their print_float. But at the time of writing, those two implementations
-            // can do very different things and result in surprising differences when
-            // unparsing then parsing the same value.
-            //
-            //                              - Ruben Osorio, 08/02/2024
-            //
+            format_float := FormatFloat.{ value = float_value_as_f64, trailing_width = trailing_width, zero_removal = .NO, positive_number_prefix = .PLUS }; 
+            format_int := FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16 };
             if #complete settings.float_output_mode ==
             {
                 case .FLOAT_ONLY;
-                if float_value_as_f64 >= 0.0 then append(builder, " ");
-                print_float(builder, format);
-
-                case .FLOAT_AND_BINARY;
-                if float_value_as_f64 >= 0.0 then append(builder, " ");
-                print_float(builder, format); 
-                append(builder, " #0x");
-                print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
+                print_float(builder, format_float);
 
                 case .BINARY_ONLY;
                 append(builder, "#0x");
-                print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
+                print_integer(builder, format_int);
+
+                case .BINARY_WITH_COMMENT;
+                append(builder, "#0x");
+                print_integer(builder, format_int);
+                append(builder, " /*");
+                print_float(builder, format_float);
+                append(builder, "*/");
             }
 
 

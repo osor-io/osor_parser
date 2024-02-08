@@ -11,6 +11,7 @@ main :: ()
     simple_parsing();
     simple_unparsing();
     custom_parsing_and_unparsing();
+    float_unparsing_and_parsing();
     // @@TODO: example of custom allocation when parsing
     big_boy_parsing();
     big_boy_unparsing();
@@ -140,6 +141,56 @@ custom_parsing_and_unparsing :: ()
     success, error = unparse(*builder, *test, Unparse_Settings.{extra_custom_unparsers = .[custom_unparse]});
     the_string := builder_to_string(*builder);
     print("Unparsed the data type back to this string:\n%\n", the_string);
+}
+
+
+
+float_unparsing_and_parsing :: ()
+{
+    print_example_name("Floating-Point Number Unparsing & Parsing");
+
+    Test :: struct
+    {
+        a : float;
+        b : float64;
+    }
+
+    test : Test;
+    test.a = 3.1415927;
+    test.b = 3.141592653589793;
+
+    unparse_and_parse_back :: (output_floats_as_binary : bool) #expand
+    {
+        unparse_settings := Unparse_Settings.{
+            float_output_mode = ifx output_floats_as_binary then .BINARY_WITH_COMMENT else .FLOAT_ONLY,
+        };
+
+        builder : String_Builder;
+        defer reset(*builder);
+        success, error := unparse(*builder, *test, unparse_settings);
+        the_string := builder_to_string(*builder);
+        print("Unparsed the data with floats into this:\n%\n", the_string);
+
+        readback : Test;
+        success, error = parse(the_string, *readback);
+        if !success then log_error(error);
+        print("When read back the data is this:\na = %\nb = %\n\n", FormatFloat.{value = readback.a, trailing_width = 20}, FormatFloat.{value = readback.b, trailing_width = 20});
+
+        data_matches := memcmp(*test, *readback, size_of(Test)) == 0;
+        print("Does it match the original data?\n%\n\n", data_matches);
+
+        if output_floats_as_binary
+        {
+            assert(data_matches);
+            print("Because we're outputting the binary representation of the floats and reading them back they will always match.\n\n");
+        }
+        else
+        {
+            print("Because we're outputting floats as literals and those are iffy to write and to parse back,\nthere can be imprecissions so the data we read back might not match the original\n\n");
+        }
+    }
+    unparse_and_parse_back(false);
+    unparse_and_parse_back(true);
 }
 
 
