@@ -206,44 +206,58 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
 
 
             case .FLOAT;
-            negate := false;
-            if token.type == .Plus  
+            value_f64 : float64;
+            has_value := false;
+            if token.type == .Plus || token.type == .Minus || token.type == .Float || token.type == .Integer
             {
-                token += 1;
+                negate := false;
+                while token.type == .Plus || token.type == .Minus
+                {
+                    if token.type == .Minus then negate = !negate;
+                    token += 1;
+                }
+                if token.type == .Float || token.type == .Integer
+                {
+                    parsed_value, success, remainder := string_to_float64(token.text);
+                    if !success             then return null, false, error(token, "Couldn't parse float from this string");
+                    if remainder.count != 0 then return null, false, error(token, "Didn't use the full string when parsing this float, results will be incorrect");
+                    value_f64 = ifx negate then -parsed_value else parsed_value;
+                    has_value = true;
+                    token += 1;
+                }
+                else
+                {
+                    return null, false, error(token, "Expected Integer or Float but found %", token.type);
+                }
             }
-            else if token.type == .Minus 
-            {
-                negate = true;
-                token += 1;
-            }
-            if !(token.type == .Float || token.type == .Integer)
-            {
-                return null, false, error(token, "Expected Integer or Float but found %", token.type);
-            }
-            value_f64, success, remainder := string_to_float64(token.text);
-            assert(success);
-            assert(remainder.count == 0);
-            if negate then value_f64 = -value_f64;
-            token += 1;
             if token.type == .Hash
             {
                 token += 1;
                 if token.type == .Integer
                 {
                     value_u64, integer_parse_success, integer_parse_error := token_to_integer(token);
-                    if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %\n", integer_parse_error);
+                    if !integer_parse_success then return null, false, error(token, "Couldn't parse integer number: %", integer_parse_error);
                     value_u64_as_f64 := (cast(*float64)(*value_u64)).*;
-                    diff := value_f64 - value_u64_as_f64;
-                    if diff < 0 then diff = -diff;
-                    value_f64_positive := ifx value_f64 < 0 then -value_f64 else value_f64;
-                    THRESHOLD_BASED_ON_F32_PRECISSION :: 0.000001;
-                    if (diff / value_f64_positive) > THRESHOLD_BASED_ON_F32_PRECISSION 
+                    if has_value
                     {
-                        return null, false, error(token, "The floating point value embedded as bytes (after #) differs too much from the actual number written (difference was %), if you edited the file you should delete the # and the integer after", diff);
+                        diff := value_f64 - value_u64_as_f64;
+                        if diff < 0 then diff = -diff;
+                        value_f64_positive := ifx value_f64 < 0 then -value_f64 else value_f64;
+                        THRESHOLD_BASED_ON_F32_PRECISSION :: 0.000001;
+                        if (diff / value_f64_positive) > THRESHOLD_BASED_ON_F32_PRECISSION 
+                        {
+                            return null, false, error(token, "The floating point value embedded as bytes (after #) differs too much from the actual number written (difference was %), if you edited the file you should delete the # and the integer after", diff);
+                        }
+                        else
+                        {
+                            value_f64 = value_u64_as_f64;
+                            assert(has_value);
+                        }
                     }
                     else
                     {
                         value_f64 = value_u64_as_f64;
+                        has_value = true;
                     }
                     token += 1;
                 }
@@ -251,6 +265,10 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
                 {
                     return null, false, error(token, "Expected Integer as the int representation of a float (after a #) but found %", token.type);
                 }
+            }
+            if !has_value
+            {
+                return null, false, error(token, "Attempting to parse a float but we couldn't find any values here");
             }
             if info.runtime_size == 8
             {
@@ -682,6 +700,15 @@ Unparse_Settings :: struct
     extra_custom_unparsers : []Custom_Unparser;
     // If you want a particular call to use further custom unparsing procedures in addition
     // to the ones in the module parameters, you can specify them here.
+
+    float_output_mode : enum
+    { 
+        FLOAT_ONLY;       // 1.0
+        FLOAT_AND_BINARY; // 1.0 #0x3ff0000000000000
+        BINARY_ONLY;      // #0x3ff0000000000000
+    } = .FLOAT_AND_BINARY;
+    // This controls the different ways to output floating point numbers. With a balance
+    // of readability, modifiability, precission and speed or parsing.
 }
 
 Custom_Unparser :: #type (builder : *String_Builder, struct_info : *Type_Info_Struct, value_pointer : *void) -> unparsed : bool, error : string;
@@ -693,7 +720,7 @@ unparse :: (builder : *String_Builder, input : *$Input_Type, settings := Unparse
 }
 unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_Info_Struct, settings := Unparse_Settings.{}) -> success : bool, error : string
 {
-    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, custom_unparsers : []Custom_Unparser, brackets_on_struct := true) -> success : bool #must, error : string #must
+    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, settings : Unparse_Settings, custom_unparsers : []Custom_Unparser, brackets_on_struct := true) -> success : bool #must, error : string #must
     {
         append_indentation :: (builder : *String_Builder, depth : int)
         {
@@ -713,17 +740,40 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
             case .FLOAT;
             float_value_as_f64 : float64;
             if      info.runtime_size == 4 { float_value_as_f64 = cast(float64)(cast(*float32)value_pointer).*; }
-            else if info.runtime_size == 8 { float_value_as_f64 = cast(float64)(cast(*float64)value_pointer).*; }
+            else if info.runtime_size == 8 { float_value_as_f64 =              (cast(*float64)value_pointer).*; }
             else assert(false);
             float_value_as_u64 := (cast(*u64)*float_value_as_f64).*;
             format := FormatFloat.{ trailing_width = 15 };
             format.value.type = info;
             format.value.value_pointer = value_pointer;
-            if float_value_as_f64 >= 0.0 then append(builder, " ");
-            print_float(builder, format);
-            append(builder, " # ");
-            append(builder, "0x");
-            print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
+            //
+            // @@TODO: Would like to do string<->float conversions with code
+            // in this module so we can make both paths aware of each other and
+            // minimize precission issues with parsing and unparsing the same values. 
+            //
+            // Currently we rely on jai's string_to_float64 and whatever they decide to use
+            // for their print_float. But at the time of writing, those two implementations
+            // can do very different things and result in surprising differences when
+            // unparsing then parsing the same value.
+            //
+            //                              - Ruben Osorio, 08/02/2024
+            //
+            if #complete settings.float_output_mode ==
+            {
+                case .FLOAT_ONLY;
+                if float_value_as_f64 >= 0.0 then append(builder, " ");
+                print_float(builder, format);
+
+                case .FLOAT_AND_BINARY;
+                if float_value_as_f64 >= 0.0 then append(builder, " ");
+                print_float(builder, format); 
+                append(builder, " #0x");
+                print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
+
+                case .BINARY_ONLY;
+                append(builder, "#0x");
+                print_integer(builder, FormatInt.{ value = float_value_as_u64, base = 16 , minimum_digits = 16});
+            }
 
 
 
@@ -743,7 +793,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
             case .POINTER;
             pointer_info := cast(*Type_Info_Pointer)info;
             the_pointer := (cast(**void)value_pointer).*;
-            successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth, custom_unparsers);
+            successful_pointer_unparse, pointer_unparse_error := unparse_one(builder, pointer_info.pointer_to, the_pointer, depth, settings, custom_unparsers);
             if !successful_pointer_unparse then return false, pointer_unparse_error;
 
 
@@ -783,7 +833,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
                                 }
                                 if (member.flags & .USING)
                                 {
-                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, custom_unparsers, brackets_on_struct = false);
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth, settings, custom_unparsers, brackets_on_struct = false);
                                     if !successful_member_unparse then return false, member_unparse_error;
                                 }
                                 else
@@ -791,7 +841,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
                                     append_indentation(builder, depth);
                                     append(builder, member.name);
                                     append(builder, " = ");
-                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1, custom_unparsers);
+                                    successful_member_unparse, member_unparse_error := unparse_one(builder, member.type, member_value_pointer, depth + 1, settings, custom_unparsers);
                                     if !successful_member_unparse then return false, member_unparse_error;
                                     append(builder, "\n");
                                 }
@@ -826,7 +876,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
             {
                 if it == 0 || (max(it-1, 0) % line_break_every_n_elements) == (line_break_every_n_elements-1) then append_indentation(builder, depth);
                 array_element_value_pointer := array_view.data + (array_info.element_type.runtime_size * it);
-                successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1, custom_unparsers);
+                successful_element_unparse, element_unparse_error := unparse_one(builder, array_info.element_type, array_element_value_pointer, depth + 1, settings, custom_unparsers);
                 if !successful_element_unparse then return false, element_unparse_error;
                 if it == array_view.count-1 || (it % line_break_every_n_elements) == (line_break_every_n_elements-1) then append(builder, ",\n"); else append(builder, ", ");
             }
@@ -889,7 +939,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
 
             case .VARIANT;
             variant_info := cast(*Type_Info_Variant)info;
-            successful_variant_unparse, variant_unparse_error := unparse_one(builder, variant_info.variant_of, value_pointer, depth, custom_unparsers);
+            successful_variant_unparse, variant_unparse_error := unparse_one(builder, variant_info.variant_of, value_pointer, depth, settings, custom_unparsers);
             if !successful_variant_unparse then return false, variant_unparse_error;
 
 
@@ -911,7 +961,7 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
     for CUSTOM_UNPARSERS local_custom_unparsers[it_index] = it; 
     for settings.extra_custom_unparsers local_custom_unparsers[CUSTOM_UNPARSERS.count + it_index] = it;
 
-    successful_unparse, unparse_error := unparse_one(builder, input_type_info, input, depth = 0, local_custom_unparsers, brackets_on_struct = false);
+    successful_unparse, unparse_error := unparse_one(builder, input_type_info, input, depth = 0, settings, local_custom_unparsers, brackets_on_struct = false);
     if !successful_unparse then return false, unparse_error;
 
     return true, "";
