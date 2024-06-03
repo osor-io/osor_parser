@@ -39,6 +39,8 @@ Token :: struct
         Colon;
         Hash;
         Ampersand;
+        Percent;
+        Tilde;
 
         End;
     }
@@ -289,6 +291,8 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
         else if is_operator(tokenizer, ":")  { advance(); found_token(Colon);             }
         else if is_operator(tokenizer, "#")  { advance(); found_token(Hash);              }
         else if is_operator(tokenizer, "&")  { advance(); found_token(Ampersand);         }
+        else if is_operator(tokenizer, "%")  { advance(); found_token(Percent);           }
+        else if is_operator(tokenizer, "~")  { advance(); found_token(Tilde);             }
         else
         {
             current_character := tokenizer.current;
