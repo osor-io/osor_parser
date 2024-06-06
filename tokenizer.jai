@@ -311,8 +311,8 @@ tokenize_one_token :: (tokenizer : *Tokenizer, tokens_to_ignore : [] Token.Type 
 get_text_between_tokens_including_last :: (first : Token, last : Token) -> string
 {
     value : string;
-    value.data = first_token.text.data;
-    value.count = last_token.text.data + last_token.text.count - value.data;
+    value.data = first.text.data;
+    value.count = last.text.data + last.text.count - value.data;
     return value;
 }
 
