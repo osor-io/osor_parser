@@ -2,6 +2,7 @@
 #import "Math";
 #import "Hash";
 #import "Hash_Table";
+#import "osor_tokenizer"; // https:/github.com/osor-io/osor_tokenizer
 #import,dir "../osor_parser";
 
 
@@ -96,15 +97,15 @@ custom_parsing_and_unparsing :: ()
         {
             three_ints := cast(*Three_Ints)value_pointer;
 
-            assert(token.type == .Integer);
+            assert(token.type == .INTEGER);
             three_ints.x = string_to_int(token.text); 
             token += 1;
 
-            assert(token.type == .Integer);
+            assert(token.type == .INTEGER);
             three_ints.y = string_to_int(token.text); 
             token += 1;
 
-            assert(token.type == .Integer);
+            assert(token.type == .INTEGER);
             three_ints.z = string_to_int(token.text); 
             token += 1;
 
@@ -510,18 +511,18 @@ vector_parsing :: (token : *Token, struct_info : *Type_Info_Struct, value_pointe
     {
         components := cast(*float)value_pointer;
         component_count := struct_info.runtime_size / size_of(float);
-        if token.type != .Open_Parentheses then return false, null, "Missing initial open parentheses";
+        if token.type != .OPEN_PARENTHESES then return false, null, "Missing initial open parentheses";
         token += 1;
         component_index := 0;
         while true 
         {
             sign := 1.0;
-            if token.type == .Minus
+            if token.type == .MINUS
             {
                 sign = -1.0; 
                 token += 1;
             }
-            if !(token.type == .Float || token.type == .Integer) then return false, null, tprint("Expected a number but found %", token.type);
+            if !(token.type == .FLOAT || token.type == .INTEGER) then return false, null, tprint("Expected a number but found %", token.type);
             if component_index < component_count
             {
                 components[component_index] = sign * cast(float)string_to_float64(token.text);;
@@ -532,11 +533,11 @@ vector_parsing :: (token : *Token, struct_info : *Type_Info_Struct, value_pointe
             {
                 return false, null, "Trying to write too many components for this type";
             }
-            if token.type == .Close_Parentheses
+            if token.type == .CLOSE_PARENTHESES
             {
                 break;
             }
-            if token.type == .Comma
+            if token.type == .COMMA
             {
                 token += 1;
             }
@@ -589,7 +590,7 @@ make_string_id :: (s : string) -> String_ID
 }
 string_id_parsing :: (token : *Token, struct_info : *Type_Info_Struct, value_pointer : *void) -> parsed : bool, next_token : *Token, error : string
 {
-    if struct_info == type_info(String_ID) && token.type == .String
+    if struct_info == type_info(String_ID) && token.type == .STRING
     {
         string_id : String_ID;
         string_id.hash = get_hash(token.text);
