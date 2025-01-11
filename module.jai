@@ -655,7 +655,10 @@ parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Str
             case .ANY;                  #through;
             case .POLYMORPHIC_VARIABLE; #through;
             case .TYPE;                 #through;
-            case .CODE;
+            case .CODE;                 #through;
+            case .UNTYPED_LITERAL;      #through;
+            case .UNTYPED_ENUM;
+
             return null, false, error(token, "Requesting parsing of unsupported type '%'", info.type);
         }
         return token, true, "";
