@@ -931,7 +931,9 @@ unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_In
             case .ANY;                  #through;
             case .POLYMORPHIC_VARIABLE; #through;
             case .TYPE;                 #through;
-            case .CODE;
+            case .CODE;                 #through;
+            case .UNTYPED_LITERAL;      #through;
+            case .UNTYPED_ENUM;
             return false, tprint("Requesting unparsing of unsupported type '%'", info.type);
         }
 
