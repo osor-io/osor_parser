@@ -141,7 +141,7 @@ parse :: (the_string : string, result : *$Result_Type, settings := Parse_Setting
 }
 parse :: (the_string : string, result : *void, result_type_info : *Type_Info_Struct, settings := Parse_Settings.{}) -> success : bool, error : string
 {
-    parse_one :: (token : *Token, info : *Type_Info, value_pointer : *void, settings : Parse_Settings, custom_parsers : []Custom_Parser, is_first_call := false) -> *Token #must, success : bool #must, error : string #must
+    parse_one :: (token : *Token, info : *Type_Info, value_pointer : *void, settings : Parse_Settings, custom_parsers : []Custom_Parser, is_first_call := false) -> *Token, success : bool, error : string
     {
         error :: (token : *Token, format : string, arguments : .. Any) -> string
         {
@@ -713,7 +713,7 @@ unparse :: (builder : *String_Builder, input : *$Input_Type, settings := Unparse
 }
 unparse :: (builder : *String_Builder, input : *void, input_type_info : *Type_Info_Struct, settings := Unparse_Settings.{}) -> success : bool, error : string
 {
-    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, settings : Unparse_Settings, custom_unparsers : []Custom_Unparser, brackets_on_struct := true) -> success : bool #must, error : string #must
+    unparse_one :: (builder : *String_Builder, info : *Type_Info, value_pointer : *void, depth : int, settings : Unparse_Settings, custom_unparsers : []Custom_Unparser, brackets_on_struct := true) -> success : bool, error : string
     {
         append_indentation :: (builder : *String_Builder, depth : int)
         {
